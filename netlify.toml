@@ -1,3 +1,4 @@
 [build]
-  publish = "public"
+  command = "npm --prefix react-frontend ci && npm --prefix react-frontend run build"
+  publish = "react-frontend/dist"
   functions = "netlify/functions"
