@@ -1,31 +1,7 @@
 :root {
-  --color-bg: #09090b;        /* Pure premium dark zinc background */
-  --color-border: #1f1f23;    /* Ultra-crisp modern grid borders */
-  --neon-green: #10b981;      /* Vibrant vibrant green for candles */
-  --neon-red: #f43f5e;        /* Vibrant vibrant red for candles */
+  --color-bg: #09090b;
+  --color-border: #1f1f23;
 }
-
 body {
   background-color: var(--color-bg);
-}
-
-.bg-chart-bg {
-  background-color: var(--color-bg);
-}
-
-.border-chart-border {
-  border-color: var(--color-border);
-}
-
-/* Custom scrollbars for data tables and panels */
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-::-webkit-scrollbar-track {
-  background: #09090b;
-}
-::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border-radius: 2px;
 }
