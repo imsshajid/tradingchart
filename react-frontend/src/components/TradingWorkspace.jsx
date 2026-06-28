@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import LightweightTradingChart from "./LightweightTradingChart.jsx";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1D"];
 const ASSETS = ["XAUUSD", "BTCUSD", "ETHUSD", "USTECH", "USOIL", "EURUSD", "GBPUSD"];
@@ -33,6 +34,36 @@ function formatRemaining(totalSeconds) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function createFallbackCandles(symbol) {
+  const seed = symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) || 1;
+  const start = Math.floor(Date.now() / 1000) - 15 * 60 * 180;
+  let close = symbol === "BTCUSD" ? 65000 : symbol === "XAUUSD" ? 2320 : 220;
+  let random = seed;
+
+  const next = () => {
+    random = (random * 16807) % 2147483647;
+    return (random - 1) / 2147483646;
+  };
+
+  return Array.from({ length: 180 }, (_, index) => {
+    const open = close;
+    const drift = (next() - 0.48) * close * 0.006;
+    close = Math.max(0.01, open + drift);
+    const spread = Math.abs(close - open) + close * (0.0015 + next() * 0.003);
+    const high = Math.max(open, close) + spread * next();
+    const low = Math.max(0.01, Math.min(open, close) - spread * next());
+
+    return {
+      time: start + index * 15 * 60,
+      open: Number(open.toFixed(5)),
+      high: Number(high.toFixed(5)),
+      low: Number(low.toFixed(5)),
+      close: Number(close.toFixed(5)),
+      volume: Math.round(1000 + next() * 50000),
+    };
+  });
+}
+
 export function CountdownToBarClose({ resolution = "5m", latestTickTimestamp = Date.now() }) {
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const intervalSeconds = useMemo(() => resolutionToSeconds(resolution), [resolution]);
@@ -60,70 +91,81 @@ export function CountdownToBarClose({ resolution = "5m", latestTickTimestamp = D
   );
 }
 
-function ChartPane({ id, asset, timeframe, theme, latestTickTimestamp, settings }) {
-  const canvasRef = useRef(null);
+function ChartPane({ id, asset, timeframe, theme, settings }) {
+  const [candles, setCandles] = useState([]);
+  const [status, setStatus] = useState("loading");
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const controller = new AbortController();
 
-    const context = canvas.getContext("2d");
-    const rect = canvas.getBoundingClientRect();
-    const ratio = window.devicePixelRatio || 1;
+    async function loadCandles() {
+      setStatus("loading");
 
-    canvas.width = Math.max(1, Math.floor(rect.width * ratio));
-    canvas.height = Math.max(1, Math.floor(rect.height * ratio));
-    context.scale(ratio, ratio);
-    context.clearRect(0, 0, rect.width, rect.height);
+      try {
+        const params = new URLSearchParams({ ticker: asset, resolution: timeframe });
+        const response = await fetch(`/api/market-engine?${params.toString()}`, {
+          signal: controller.signal,
+        });
 
-    const bg = theme === "dark" ? "#0d1117" : "#ffffff";
-    const grid = theme === "dark" ? "#30363d" : "#e5e7eb";
-    context.fillStyle = bg;
-    context.fillRect(0, 0, rect.width, rect.height);
+        if (!response.ok) {
+          throw new Error(`Market data request failed with ${response.status}.`);
+        }
 
-    context.strokeStyle = grid;
-    context.lineWidth = 1;
-    for (let x = 48; x < rect.width; x += 72) {
-      context.beginPath();
-      context.moveTo(x, 0);
-      context.lineTo(x, rect.height);
-      context.stroke();
+        const payload = await response.json();
+        const nextCandles = Array.isArray(payload.data) ? payload.data : [];
+
+        if (!payload.success || nextCandles.length === 0) {
+          throw new Error(payload.error || "No candles returned.");
+        }
+
+        setCandles(nextCandles);
+        setStatus("live");
+      } catch (error) {
+        if (error.name === "AbortError") return;
+        setCandles(createFallbackCandles(asset));
+        setStatus("fallback");
+      }
     }
-    for (let y = 36; y < rect.height; y += 56) {
-      context.beginPath();
-      context.moveTo(0, y);
-      context.lineTo(rect.width, y);
-      context.stroke();
-    }
 
-    const points = Array.from({ length: 44 }, (_, index) => {
-      const x = 28 + index * ((rect.width - 56) / 43);
-      const wave = Math.sin(index / 3) * 28 + Math.cos(index / 7) * 18;
-      const y = rect.height / 2 + wave - index * 0.9;
-      return { x, y };
-    });
+    loadCandles();
+    return () => controller.abort();
+  }, [asset, timeframe]);
 
-    context.strokeStyle = settings.bullColor;
-    context.lineWidth = 2;
-    context.beginPath();
-    points.forEach((point, index) => {
-      if (index === 0) context.moveTo(point.x, point.y);
-      else context.lineTo(point.x, point.y);
-    });
-    context.stroke();
-  }, [asset, timeframe, theme, settings]);
+  const indicatorSettings = useMemo(() => ({
+    ema: { enabled: true, length: 21, source: "close", color: "#10b981" },
+    rsi: { enabled: false },
+    stochastic: { enabled: false },
+  }), []);
+
+  const latestCandleTime = candles.at(-1)?.time ?? Date.now();
+  const statusLabel =
+    status === "live" ? "Yahoo OHLCV" : status === "loading" ? "Loading" : "Fallback candles";
 
   return (
     <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-[#30363d] dark:bg-[#161b22]">
       <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-3 dark:border-[#30363d]">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-100">{asset}</p>
-          <p className="text-xs text-zinc-500">Pane {id} / {timeframe}</p>
+          <p className="text-xs text-zinc-500">Pane {id} / {timeframe} / {statusLabel}</p>
         </div>
-        <CountdownToBarClose resolution={timeframe} latestTickTimestamp={latestTickTimestamp} />
+        <CountdownToBarClose resolution={timeframe} latestTickTimestamp={latestCandleTime} />
       </div>
+
       <div className="relative min-h-0 flex-1 bg-white dark:bg-[#0d1117]">
-        <canvas ref={canvasRef} className="h-full w-full" aria-label={`${asset} chart canvas`} />
+        <LightweightTradingChart
+          data={candles}
+          theme={theme}
+          candleOptions={{
+            upColor: settings.bullColor,
+            downColor: settings.bearColor,
+            borderVisible: false,
+            wickColor: settings.wickColor,
+          }}
+          indicatorSettings={indicatorSettings}
+          showToolBadge={false}
+          className="h-full min-h-0 rounded-none border-0 shadow-none"
+        />
+
         {settings.sessionBreaks && (
           <div className="pointer-events-none absolute inset-y-0 right-1/3 border-l border-dashed border-zinc-300 dark:border-[#30363d]" />
         )}
@@ -198,7 +240,7 @@ function ColorInput({ label, value, onChange }) {
 
 export default function TradingWorkspace() {
   const [theme, setTheme] = useState("dark");
-  const [timeframe, setTimeframe] = useState("5m");
+  const [timeframe, setTimeframe] = useState("15m");
   const [asset, setAsset] = useState("BTCUSD");
   const [layout, setLayout] = useState("single");
   const [modalOpen, setModalOpen] = useState(false);
@@ -209,7 +251,6 @@ export default function TradingWorkspace() {
     wickColor: "#94a3b8",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   });
-  const latestTickTimestamp = Date.now();
 
   const panes = layout === "single" ? [1] : [1, 2];
   const gridClass =
@@ -225,7 +266,7 @@ export default function TradingWorkspace() {
         <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 dark:border-[#30363d] dark:bg-[#161b22]">
           <div>
             <p className="text-sm font-bold tracking-[0.24em]">QUANTUM WORKSPACE</p>
-            <p className="text-xs text-zinc-500">Independent canvas matrix</p>
+            <p className="text-xs text-zinc-500">Independent chart matrix</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -262,7 +303,6 @@ export default function TradingWorkspace() {
               timeframe={timeframe}
               theme={theme}
               settings={settings}
-              latestTickTimestamp={latestTickTimestamp}
             />
           ))}
         </main>

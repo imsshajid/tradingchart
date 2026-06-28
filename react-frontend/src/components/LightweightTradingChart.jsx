@@ -248,6 +248,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     initialTools = [],
     activeTool = "select",
     onToolsChange,
+    showToolBadge = true,
     className = "",
   },
   ref,
@@ -693,6 +694,9 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   useEffect(() => {
     candleSeriesRef.current?.setData(styledData);
     volumeSeriesRef.current?.setData(volumeData);
+    if (styledData.length > 0) {
+      chartRef.current?.timeScale().fitContent();
+    }
     redrawOverlay();
   }, [redrawOverlay, styledData, volumeData]);
 
@@ -852,7 +856,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   return (
     <div
       ref={rootRef}
-      className={`relative h-full min-h-[420px] w-full overflow-hidden rounded-xl border shadow-sm ${className}`}
+      className={`relative h-full min-h-0 w-full overflow-hidden rounded-xl border shadow-sm ${className}`}
       style={{
         borderColor: getTheme(theme).grid,
         background: getTheme(theme).gradient,
@@ -867,15 +871,17 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerUp}
       />
-      <div className="pointer-events-none absolute left-3 top-3 rounded-md border px-2 py-1 text-xs font-medium shadow-sm backdrop-blur"
-        style={{
-          borderColor: getTheme(theme).grid,
-          color: getTheme(theme).text,
-          background: theme === "dark" ? "rgba(22, 27, 34, 0.78)" : "rgba(255, 255, 255, 0.78)",
-        }}
-      >
-        Tool: {toolMode}
-      </div>
+      {showToolBadge && (
+        <div className="pointer-events-none absolute left-3 top-3 rounded-md border px-2 py-1 text-xs font-medium shadow-sm backdrop-blur"
+          style={{
+            borderColor: getTheme(theme).grid,
+            color: getTheme(theme).text,
+            background: theme === "dark" ? "rgba(22, 27, 34, 0.78)" : "rgba(255, 255, 255, 0.78)",
+          }}
+        >
+          Tool: {toolMode}
+        </div>
+      )}
     </div>
   );
 });

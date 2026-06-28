@@ -7,29 +7,50 @@ const CORS_HEADERS = {
   "Cache-Control": "public, max-age=15, stale-while-revalidate=60",
 };
 
-const DEFAULT_TICKER = "AAPL";
-const TICKER_PATTERN = /^[A-Z0-9.^-]{1,16}$/;
+const DEFAULT_TICKER = "BTCUSD";
+const TICKER_PATTERN = /^[A-Z0-9.^=-]{1,24}$/;
 const YAHOO_TIMEOUT_MS = 9000;
-const RANGE = "1mo";
-const INTERVAL = "15m";
 
-function jsonResponse(payload, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
+const SYMBOL_ALIASES = {
+  BTCUSD: "BTC-USD",
+  ETHUSD: "ETH-USD",
+  XAUUSD: "GC=F",
+  USTECH: "NQ=F",
+  USOIL: "CL=F",
+  EURUSD: "EURUSD=X",
+  GBPUSD: "GBPUSD=X",
+};
+
+const RESOLUTION_CONFIG = {
+  "1m": { range: "5d", interval: "1m" },
+  "5m": { range: "1mo", interval: "5m" },
+  "15m": { range: "1mo", interval: "15m" },
+  "1h": { range: "3mo", interval: "60m" },
+  "4h": { range: "6mo", interval: "60m", aggregateSeconds: 4 * 60 * 60 },
+  "1D": { range: "1y", interval: "1d" },
+};
+
+function jsonResponse(payload, statusCode = 200) {
+  return {
+    statusCode,
     headers: CORS_HEADERS,
-  });
+    body: JSON.stringify(payload),
+  };
 }
 
-function getTickerFromRequest(requestUrl) {
-  const url = new URL(requestUrl);
-  const rawTicker = url.searchParams.get("ticker") || DEFAULT_TICKER;
-  const ticker = rawTicker.trim().toUpperCase();
+function normalizeTicker(rawTicker = DEFAULT_TICKER) {
+  const ticker = String(rawTicker).trim().toUpperCase();
 
   if (!TICKER_PATTERN.test(ticker)) {
     throw new Error("Invalid ticker query parameter.");
   }
 
   return ticker;
+}
+
+function normalizeResolution(rawResolution = "15m") {
+  const resolution = String(rawResolution).trim();
+  return RESOLUTION_CONFIG[resolution] ? resolution : "15m";
 }
 
 function toFiniteNumber(value) {
@@ -73,27 +94,61 @@ function mapYahooCandles(result) {
     .filter(isCompleteCandle);
 }
 
-export default async function handler(request) {
-  if (request.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: CORS_HEADERS,
-    });
+function aggregateCandles(candles, bucketSeconds) {
+  const buckets = new Map();
+
+  for (const candle of candles) {
+    const bucketTime = Math.floor(candle.time / bucketSeconds) * bucketSeconds;
+    const current = buckets.get(bucketTime);
+
+    if (!current) {
+      buckets.set(bucketTime, {
+        time: bucketTime,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+      });
+      continue;
+    }
+
+    current.high = Math.max(current.high, candle.high);
+    current.low = Math.min(current.low, candle.low);
+    current.close = candle.close;
+    current.volume += candle.volume;
   }
 
-  if (request.method !== "GET") {
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+}
+
+exports.handler = async function handler(event) {
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 204,
+      headers: CORS_HEADERS,
+      body: "",
+    };
+  }
+
+  if (event.httpMethod !== "GET") {
     return jsonResponse({ success: false, error: "Method not allowed." }, 405);
   }
 
+  const params = event.queryStringParameters || {};
   let ticker;
+  let resolution;
 
   try {
-    ticker = getTickerFromRequest(request.url);
+    ticker = normalizeTicker(params.ticker);
+    resolution = normalizeResolution(params.resolution);
   } catch (error) {
     return jsonResponse({ success: false, error: error.message }, 400);
   }
 
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=${RANGE}&interval=${INTERVAL}`;
+  const yahooTicker = SYMBOL_ALIASES[ticker] || ticker;
+  const config = RESOLUTION_CONFIG[resolution];
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?range=${config.range}&interval=${config.interval}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), YAHOO_TIMEOUT_MS);
 
@@ -101,7 +156,7 @@ export default async function handler(request) {
     const yahooResponse = await fetch(yahooUrl, {
       signal: controller.signal,
       headers: {
-        "Accept": "application/json",
+        Accept: "application/json",
         "User-Agent": "Mozilla/5.0 NetlifyMarketEngine/1.0",
       },
     });
@@ -123,14 +178,19 @@ export default async function handler(request) {
       throw new Error("Yahoo Finance returned no chart result.");
     }
 
-    const data = mapYahooCandles(result);
+    const mappedCandles = mapYahooCandles(result);
+    const data = config.aggregateSeconds
+      ? aggregateCandles(mappedCandles, config.aggregateSeconds)
+      : mappedCandles;
 
     return jsonResponse({
       success: true,
       source: "yahoo-finance",
       ticker,
-      range: RANGE,
-      interval: INTERVAL,
+      yahooTicker,
+      resolution,
+      range: config.range,
+      interval: config.interval,
       count: data.length,
       data,
     });
@@ -142,15 +202,11 @@ export default async function handler(request) {
     return jsonResponse({
       success: false,
       ticker,
-      range: RANGE,
-      interval: INTERVAL,
+      yahooTicker,
+      resolution,
       error: message,
     }, 502);
   } finally {
     clearTimeout(timeout);
   }
-}
-
-export const config = {
-  path: "/api/market-engine",
 };

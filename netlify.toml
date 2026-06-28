@@ -2,3 +2,8 @@
   command = "npm --prefix react-frontend ci && npm --prefix react-frontend run build"
   publish = "react-frontend/dist"
   functions = "netlify/functions"
+
+[[redirects]]
+  from = "/api/market-engine"
+  to = "/.netlify/functions/marketEngine"
+  status = 200
