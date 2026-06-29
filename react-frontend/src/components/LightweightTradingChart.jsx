@@ -590,6 +590,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const stochasticDSeriesRef = useRef(null);
   const resizeObserverRef = useRef(null);
   const interactionRef = useRef(null);
+  const transientMeasureRef = useRef(null);
   const dataRef = useRef(data);
   const lastFitTokenRef = useRef(fitContentToken);
   const hasInitialFitRef = useRef(false);
@@ -607,6 +608,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const [selectedToolbarPosition, setSelectedToolbarPosition] = useState(null);
   const [draftTool, setDraftTool] = useState(null);
   const [draftPoint, setDraftPoint] = useState(null);
+  const [transientMeasure, setTransientMeasure] = useState(null);
   const [barStyles, setBarStyles] = useState({});
   const mergedCandleOptions = useMemo(
     () => ({ ...DEFAULT_CANDLE_OPTIONS, ...candleOptions }),
@@ -1066,6 +1068,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       };
       drawTool(context, preview, true);
     }
+
+    if (transientMeasure) {
+      drawTool(context, transientMeasure, true);
+    }
     updateSelectedToolbarPosition();
   }, [
     draftPoint,
@@ -1075,6 +1081,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     fvgData,
     selectedToolId,
     tools,
+    transientMeasure,
     updateSelectedToolbarPosition,
   ]);
 
@@ -1778,11 +1785,31 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
   const handleRootPointerDownCapture = useCallback((event) => {
     if (event.target.closest?.("[data-drawing-toolbar='true']")) return;
-    if (event.button !== 0 || draftTool) return;
+    if (event.button !== 0) return;
+
+    const point = canvasPointToDataPoint(event);
+
+    if (event.shiftKey && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      const measure = {
+        id: "transient-measure",
+        type: "measure",
+        points: [point, point],
+        levels: effectiveFibLevels,
+        dashed: true,
+        ...defaultToolStyle("measure", mergedDrawingSettings),
+      };
+      transientMeasureRef.current = { pointerId: event.pointerId };
+      setTransientMeasure(measure);
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      return;
+    }
+
+    if (draftTool) return;
     if (toolMode !== "cursor" && toolMode !== "select") return;
 
     const hit = hitTestTool(event);
-    const point = canvasPointToDataPoint(event);
 
     if (hit && point) {
       event.preventDefault();
@@ -1797,7 +1824,15 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     }
 
     setSelectedToolId(null);
-  }, [beginToolInteraction, canvasPointToDataPoint, draftTool, hitTestTool, toolMode]);
+  }, [
+    beginToolInteraction,
+    canvasPointToDataPoint,
+    draftTool,
+    effectiveFibLevels,
+    hitTestTool,
+    mergedDrawingSettings,
+    toolMode,
+  ]);
 
   const handleRootDoubleClickCapture = useCallback((event) => {
     if (event.target.closest?.("[data-drawing-toolbar='true']")) return;
@@ -1813,13 +1848,35 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }, [hitTestTool, toolMode]);
 
   const handleRootPointerMove = useCallback((event) => {
+    if (transientMeasureRef.current) {
+      const point = canvasPointToDataPoint(event);
+      if (!point) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setTransientMeasure((current) => (
+        current ? { ...current, points: [current.points[0], point] } : current
+      ));
+      return;
+    }
+
     if (toolMode !== "cursor" && toolMode !== "select") return;
     if (!interactionRef.current) return;
     event.preventDefault();
     handlePointerMove(event);
-  }, [handlePointerMove, toolMode]);
+  }, [canvasPointToDataPoint, handlePointerMove, toolMode]);
 
   const handleRootPointerUp = useCallback((event) => {
+    if (transientMeasureRef.current) {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+      transientMeasureRef.current = null;
+      setTransientMeasure(null);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (toolMode !== "cursor" && toolMode !== "select") return;
     if (!interactionRef.current) return;
     handlePointerUp(event);

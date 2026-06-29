@@ -86,11 +86,12 @@ const DRAWING_TOOL_GROUPS = [
     ],
   },
   {
-    id: "positions",
-    tools: [
-      { id: "long-position", label: "Long Position", shortLabel: "Long", icon: TrendingUp },
-      { id: "short-position", label: "Short Position", shortLabel: "Short", icon: TrendingDown },
-    ],
+    id: "long-position",
+    tools: [{ id: "long-position", label: "Long Position", shortLabel: "Long", icon: TrendingUp }],
+  },
+  {
+    id: "short-position",
+    tools: [{ id: "short-position", label: "Short Position", shortLabel: "Short", icon: TrendingDown }],
   },
 ];
 const DRAWING_TOOLS = DRAWING_TOOL_GROUPS.flatMap((group) => group.tools);
@@ -99,6 +100,12 @@ const DRAWING_TOOL_IDS = new Set(DRAWING_TOOLS.map((tool) => tool.id));
 function normalizeWorkspaceTool(tool) {
   return DRAWING_TOOL_IDS.has(tool) ? tool : "cursor";
 }
+
+const TOOL_SHORTCUTS = {
+  f: "fib-retracement",
+  l: "long-position",
+  s: "short-position",
+};
 
 const TIMEZONE_OPTIONS = [
   { value: "Asia/Dhaka", label: "UTC+6 / Dhaka" },
@@ -1620,8 +1627,30 @@ export default function TradingWorkspace() {
     setPanes((current) => current.map((pane) => (pane.id === paneId ? { ...pane, ...patch } : pane)));
   }, []);
   const changeActiveTool = useCallback((tool) => {
-    setActiveTool(normalizeWorkspaceTool(tool));
+    const normalized = normalizeWorkspaceTool(tool);
+    setActiveTool((current) => (
+      normalized === "cursor" || current === normalized ? "cursor" : normalized
+    ));
   }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      const isTyping = target?.isContentEditable
+        || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName);
+      if (isTyping) return;
+
+      const shortcutTool = TOOL_SHORTCUTS[event.key.toLowerCase()];
+      if (!shortcutTool) return;
+
+      event.preventDefault();
+      changeActiveTool(shortcutTool);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [changeActiveTool]);
 
   const handleToolsChange = useCallback((paneId, tools) => {
     setDrawingsByPaneId((current) => {
