@@ -1137,6 +1137,9 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }, [emitToolsChange, selectedToolId]);
 
   const handlePointerDown = useCallback((event) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+
     const point = canvasPointToDataPoint(event);
     if (!point) return;
 
@@ -1231,24 +1234,30 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     })));
   }, [canvasPointToDataPoint, draftTool, emitToolsChange]);
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((event) => {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
     interactionRef.current = null;
   }, []);
 
   return (
     <div
       ref={rootRef}
-      className={`relative h-full min-h-0 w-full overflow-hidden rounded-xl border shadow-sm ${className}`}
+      className={`relative isolate h-full min-h-0 w-full overflow-hidden rounded-xl border shadow-sm ${className}`}
       style={{
         borderColor: getTheme(theme).grid,
         background: getTheme(theme).gradient,
       }}
     >
-      <div ref={chartHostRef} className="absolute inset-0" />
+      <div ref={chartHostRef} className="absolute inset-0 z-0" />
       <canvas
         ref={overlayRef}
-        className="absolute inset-0 cursor-crosshair"
-        style={{ pointerEvents: toolMode === "cursor" ? "none" : "auto" }}
+        className="absolute inset-0 z-20 cursor-crosshair"
+        style={{
+          pointerEvents: toolMode === "cursor" ? "none" : "auto",
+          touchAction: "none",
+        }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
