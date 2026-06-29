@@ -22,7 +22,6 @@ import {
   SlidersHorizontal,
   Square,
   Trash2,
-  TrendingDown,
   TrendingUp,
   Wifi,
   WifiOff,
@@ -86,12 +85,8 @@ const DRAWING_TOOL_GROUPS = [
     ],
   },
   {
-    id: "long-position",
-    tools: [{ id: "long-position", label: "Long Position", shortLabel: "Long", icon: TrendingUp }],
-  },
-  {
-    id: "short-position",
-    tools: [{ id: "short-position", label: "Short Position", shortLabel: "Short", icon: TrendingDown }],
+    id: "position",
+    tools: [{ id: "position", label: "Position", shortLabel: "Pos", icon: TrendingUp }],
   },
 ];
 const DRAWING_TOOLS = DRAWING_TOOL_GROUPS.flatMap((group) => group.tools);
@@ -103,8 +98,9 @@ function normalizeWorkspaceTool(tool) {
 
 const TOOL_SHORTCUTS = {
   f: "fib-retracement",
-  l: "long-position",
-  s: "short-position",
+  l: "position",
+  s: "position",
+  p: "position",
 };
 
 const TIMEZONE_OPTIONS = [
@@ -139,8 +135,7 @@ const DRAWING_INSTRUCTIONS = {
   measure: "Measure: click start, then click end.",
   "fib-retracement": "Fib retracement: click swing high/low pair.",
   "fib-extension": "Fib extension: click start, end, then projection anchor.",
-  "long-position": "Long position: click entry, target, then stop.",
-  "short-position": "Short position: click entry, target, then stop.",
+  position: "Position: click entry, target, then stop.",
 };
 
 const WORKSPACE_STORAGE_KEY = "quantum-terminal.workspace.v2";

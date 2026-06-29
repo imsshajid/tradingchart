@@ -533,12 +533,18 @@ function toolDirection(type) {
   return null;
 }
 
+function inferPositionDirection(points = []) {
+  const entryPrice = Number(points[0]?.price);
+  const targetPrice = Number(points[1]?.price);
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(targetPrice)) return "long";
+  return targetPrice < entryPrice ? "short" : "long";
+}
+
 function toolRequiredPoints(type) {
   if (type === "cursor") return 0;
   if (type === "horizontal-line" || type === "horizontal-ray" || type === "vertical-line") return 1;
-  if (type === "long-position" || type === "short-position") return 1;
   if (type === "fib-extension") return 3;
-  if (type === "position") return 3;
+  if (type === "position" || type === "long-position" || type === "short-position") return 3;
   return 2;
 }
 
@@ -907,58 +913,6 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     };
   }, [mergedDrawingSettings.magnetMode]);
 
-  const createDefaultPositionPoints = useCallback((entry, direction) => {
-    const entryPrice = Number(entry?.price);
-    const isShort = direction === "short";
-    const series = candleSeriesRef.current;
-    const overlay = overlayRef.current;
-    const entryY = Number.isFinite(entryPrice) && series
-      ? series.priceToCoordinate(entryPrice)
-      : null;
-    let riskDistance = Math.abs(entryPrice || 0) * 0.01;
-
-    if (series && overlay && Number.isFinite(entryY)) {
-      const rect = overlay.getBoundingClientRect();
-      const riskPixels = Math.max(36, Math.min(96, rect.height * 0.16));
-      const stopY = isShort ? entryY - riskPixels : entryY + riskPixels;
-      const stopPrice = series.coordinateToPrice(stopY);
-      if (Number.isFinite(Number(stopPrice))) {
-        riskDistance = Math.abs(Number(stopPrice) - entryPrice);
-      }
-    }
-
-    if (!Number.isFinite(riskDistance) || riskDistance <= 0) {
-      riskDistance = Math.max(Math.abs(entryPrice) * 0.01, 1);
-    }
-
-    const targetPrice = isShort ? entryPrice - riskDistance : entryPrice + riskDistance;
-    const stopPrice = isShort ? entryPrice + riskDistance : entryPrice - riskDistance;
-    const entryLogical = pointToLogical(entry);
-    const endLogical = Number.isFinite(entryLogical) ? entryLogical + 30 : null;
-    const candles = dataRef.current;
-    const lastCandle = candles[candles.length - 1];
-    const previousCandle = candles[candles.length - 2];
-    const timeStep = Number(lastCandle?.time) > Number(previousCandle?.time)
-      ? Number(lastCandle.time) - Number(previousCandle.time)
-      : 60;
-    const logicalTime = endLogical !== null && endLogical >= 0 && endLogical < candles.length
-      ? candles[Math.round(endLogical)]?.time
-      : null;
-    const projectedTime = typeof entry.time === "number"
-      ? entry.time + timeStep * 30
-      : entry.time;
-    const endPointBase = {
-      time: logicalTime ?? projectedTime,
-      ...(endLogical !== null ? { logical: endLogical } : {}),
-    };
-
-    return [
-      entry,
-      { ...endPointBase, price: targetPrice },
-      { ...endPointBase, price: stopPrice },
-    ];
-  }, [pointToLogical]);
-
   const selectedTool = useMemo(
     () => tools.find((tool) => tool.id === selectedToolId) || null,
     [selectedToolId, tools],
@@ -1009,9 +963,12 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       overlay.clientWidth - toolbarWidth - 10,
       (bounds.left + bounds.right) / 2 - toolbarWidth / 2,
     ));
+    const preferredY = selectedTool.type === "position" && bounds.bottom + 52 < overlay.clientHeight
+      ? bounds.bottom + 10
+      : bounds.top - 52;
     const y = Math.max(10, Math.min(
       overlay.clientHeight - 50,
-      bounds.top - 52,
+      preferredY,
     ));
     const next = { x: Math.round(x), y: Math.round(y) };
 
@@ -1773,19 +1730,6 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const toolType = storedToolType(toolMode);
     const direction = toolDirection(toolMode);
     if (!draftTool) {
-      if (toolType === "position" && direction) {
-        const newTool = {
-          id: createId(toolType),
-          type: toolType,
-          direction,
-          points: createDefaultPositionPoints(point, direction),
-          levels: effectiveFibLevels,
-          ...defaultToolStyle(toolType, mergedDrawingSettings),
-        };
-        completeTool(newTool);
-        return;
-      }
-
       if (requiredPoints === 1) {
         const newTool = {
           id: createId(toolType),
@@ -1813,7 +1757,13 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
     const nextPoints = [...draftTool.points, point];
     if (nextPoints.length >= requiredPoints) {
-      const newTool = { ...draftTool, points: nextPoints };
+      const newTool = {
+        ...draftTool,
+        points: nextPoints,
+        ...(draftTool.type === "position" && !draftTool.direction
+          ? { direction: inferPositionDirection(nextPoints) }
+          : {}),
+      };
       completeTool(newTool);
       setDraftTool(null);
       setDraftPoint(null);
@@ -1825,7 +1775,6 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     applyMagnetToPoint,
     canvasPointToDataPoint,
     completeTool,
-    createDefaultPositionPoints,
     draftTool,
     effectiveFibLevels,
     hitTestTool,
@@ -2265,11 +2214,12 @@ function drawPositionTool(context, entry, target, stop, tool) {
   const rewardHeight = Math.abs(target.y - entry.y);
   const riskTop = Math.min(entry.y, stop.y);
   const riskHeight = Math.abs(stop.y - entry.y);
-  const isShort = tool.direction === "short";
   const [entryData, targetData, stopData] = tool.points || [];
   const entryPrice = Number(entryData?.price);
   const targetPrice = Number(targetData?.price);
   const stopPrice = Number(stopData?.price);
+  const inferredDirection = tool.direction || inferPositionDirection(tool.points);
+  const isShort = inferredDirection === "short";
   const rewardPoints = isShort ? entryPrice - targetPrice : targetPrice - entryPrice;
   const riskPoints = isShort ? stopPrice - entryPrice : entryPrice - stopPrice;
   const reward = Math.abs(Number(rewardPoints));
@@ -2312,14 +2262,11 @@ function drawPositionTool(context, entry, target, stop, tool) {
 
   context.restore();
 
-  const directionLabel = isShort ? "SHORT" : "LONG";
-  const targetText = `TP ${formatTradePrice(targetPrice)} | +${formatPointsAndPips(reward, entryPrice)} (+${formatTradeNumber(rewardPercent, 2, 2)}%)`;
+  const targetText = `TP ${formatTradePrice(targetPrice)} | +${formatPointsAndPips(reward, entryPrice)} (+${formatTradeNumber(rewardPercent, 2, 2)}%) | RR ${Number.isFinite(rr) ? formatTradeNumber(rr, 2, 2) : "-"}`;
   const stopText = `SL ${formatTradePrice(stopPrice)} | -${formatPointsAndPips(risk, entryPrice)} (-${formatTradeNumber(riskPercent, 2, 2)}%)`;
-  const entryText = `${directionLabel} ENTRY ${formatTradePrice(entryPrice)} | RR ${Number.isFinite(rr) ? formatTradeNumber(rr, 2, 2) : "-"}`;
   const labelX = left + 6;
 
   drawPositionLabel(context, targetText, labelX, target.y - 22, targetColor);
-  drawPositionLabel(context, entryText, labelX, entry.y - 22, tool.color || "#d4d4d8");
   drawPositionLabel(context, stopText, labelX, stop.y + 4, stopColor);
 }
 
