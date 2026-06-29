@@ -38,6 +38,7 @@ import {
   formatReplayTime,
   getAssetConfig,
   isHyperliquidAsset,
+  isPollingAsset,
   mergeCandle,
   normalizeTimestamp,
   resolutionToSeconds,
@@ -48,10 +49,15 @@ const DRAWING_TOOLS = [
   { id: "cursor", label: "Move / Pan", icon: MousePointer2 },
   { id: "select", label: "Select Drawings", icon: Crosshair },
   { id: "trendline", label: "Trendline", icon: LineChart },
+  { id: "ray", label: "Ray", icon: LineChart },
+  { id: "extended-line", label: "Extended Line", icon: LineChart },
   { id: "horizontal-line", label: "Horizontal Line", icon: Activity },
+  { id: "horizontal-ray", label: "Horizontal Ray", icon: Activity },
+  { id: "vertical-line", label: "Vertical Line", icon: Activity },
   { id: "rectangle", label: "Rectangle", icon: Square },
   { id: "arrow", label: "Arrow", icon: ArrowUpRight },
   { id: "fib-retracement", label: "Fib Retracement", icon: Gauge },
+  { id: "fib-extension", label: "Fib Extension", icon: Gauge },
 ];
 
 const TIMEZONE_OPTIONS = [
@@ -73,6 +79,19 @@ const INITIAL_PANES = [
   { id: 7, symbol: "USOIL", resolution: "4h" },
   { id: 8, symbol: "EURUSD", resolution: "1D" },
 ];
+
+const DRAWING_INSTRUCTIONS = {
+  trendline: "Trendline: click start, then click end.",
+  ray: "Ray: click anchor, then direction.",
+  "extended-line": "Extended line: click two points.",
+  "horizontal-line": "Horizontal line: click price level.",
+  "horizontal-ray": "Horizontal ray: click start level.",
+  "vertical-line": "Vertical line: click timestamp.",
+  rectangle: "Rectangle: click first corner, then opposite corner.",
+  arrow: "Arrow: click tail, then head.",
+  "fib-retracement": "Fib retracement: click swing high/low pair.",
+  "fib-extension": "Fib extension: click start, end, then projection anchor.",
+};
 
 function formatRemaining(totalSeconds) {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
@@ -434,6 +453,8 @@ function ChartPane({
   const [marketSource, setMarketSource] = useState("loading");
   const [lastTick, setLastTick] = useState(null);
   const [fitToken, setFitToken] = useState(0);
+  const [pollStatus, setPollStatus] = useState("idle");
+  const [autoFollow, setAutoFollow] = useState(false);
 
   const compact = paneCount >= 4;
   const refit = useCallback(() => setFitToken((value) => value + 1), []);
@@ -448,7 +469,8 @@ function ChartPane({
         const payload = await fetchMarketHistory(config.symbol, config.resolution, controller.signal);
         setCandles(payload.data);
         setLastTick(payload.data[payload.data.length - 1] || null);
-        setMarketSource(payload.source === "hyperliquid" ? "Hyperliquid" : "Yahoo");
+        setMarketSource(payload.source === "hyperliquid" ? "Hyperliquid" : "Yahoo Poll");
+        setPollStatus(isPollingAsset(config.symbol) ? "live" : "idle");
         refit();
       } catch (error) {
         if (error.name === "AbortError") return;
@@ -496,6 +518,49 @@ function ChartPane({
   });
 
   useEffect(() => {
+    if (replayLocked || !isPollingAsset(config.symbol) || marketSource === "loading") {
+      setPollStatus("idle");
+      return undefined;
+    }
+
+    let disposed = false;
+    let busy = false;
+    let controller = null;
+    const refreshMs = resolutionToSeconds(config.resolution) <= 300 ? 10_000 : 30_000;
+
+    const refresh = async () => {
+      if (busy || disposed) return;
+      busy = true;
+      controller = new AbortController();
+      setPollStatus("polling");
+
+      try {
+        const payload = await fetchMarketHistory(config.symbol, config.resolution, controller.signal);
+        if (disposed) return;
+        const nextData = payload.data;
+        setCandles(nextData);
+        setLastTick(nextData[nextData.length - 1] || null);
+        setMarketSource("Yahoo Poll");
+        setPollStatus("live");
+      } catch (error) {
+        if (!disposed && error.name !== "AbortError") {
+          setPollStatus("delayed");
+        }
+      } finally {
+        busy = false;
+      }
+    };
+
+    const interval = window.setInterval(refresh, refreshMs);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      controller?.abort();
+    };
+  }, [config.resolution, config.symbol, marketSource, replayLocked]);
+
+  useEffect(() => {
     if (clearToolsSignal > 0) {
       chartRef.current?.clearTools?.();
     }
@@ -512,7 +577,8 @@ function ChartPane({
       ? "Pick start"
       : isHyperliquidAsset(config.symbol)
         ? liveStatus === "live" ? "Live ticks" : liveStatus
-        : "Delayed";
+        : pollStatus === "live" ? "Polling live" : pollStatus === "polling" ? "Refreshing" : "Delayed";
+  const statusIsLive = liveLabel === "Live ticks" || liveLabel === "Polling live";
 
   useEffect(() => {
     if (!active) return;
@@ -585,7 +651,7 @@ function ChartPane({
             {TIMEFRAMES.map((frame) => <option key={frame}>{frame}</option>)}
           </select>
           <span className={`hidden rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase md:inline ${
-            replay.enabled ? "bg-amber-500/10 text-amber-300" : liveStatus === "live" ? "bg-emerald-500/10 text-emerald-300" : "bg-zinc-500/10 text-zinc-400"
+            replay.enabled ? "bg-amber-500/10 text-amber-300" : statusIsLive ? "bg-emerald-500/10 text-emerald-300" : "bg-zinc-500/10 text-zinc-400"
           }`}>
             {liveLabel}
           </span>
@@ -600,6 +666,23 @@ function ChartPane({
               </p>
             </div>
             <CountdownToBarClose resolution={config.resolution} latestTickTimestamp={latestCandle?.time ?? lastTick?.time ?? Date.now()} />
+            <button
+              type="button"
+              onClick={() => {
+                setAutoFollow((current) => {
+                  const next = !current;
+                  if (next) chartRef.current?.scrollToRealTime?.();
+                  return next;
+                });
+              }}
+              className={`h-8 rounded border px-2 text-[10px] font-semibold uppercase ${
+                autoFollow
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                  : "border-[#1f1f23] bg-[#09090b] text-zinc-500 hover:text-zinc-100"
+              }`}
+            >
+              Follow
+            </button>
             <IconButton label="Fit Content" icon={Maximize2} onClick={refit} />
           </div>
         )}
@@ -624,13 +707,19 @@ function ChartPane({
           onChartTimeClick={(time) => onReplayPick(config.id, time)}
           showToolBadge={!compact}
           fitContentToken={fitToken}
-          followLive={!replay.enabled}
+          followLive={autoFollow && !replay.enabled}
           className="h-full min-h-0 rounded-none border-0 shadow-none"
         />
 
         {replay.selecting && active && (
           <div className="pointer-events-none absolute left-3 top-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200">
             Click a candle to set replay start
+          </div>
+        )}
+
+        {active && !replay.selecting && DRAWING_INSTRUCTIONS[activeTool] && (
+          <div className="pointer-events-none absolute left-3 top-3 max-w-[18rem] rounded border border-sky-500/35 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-100">
+            {DRAWING_INSTRUCTIONS[activeTool]}
           </div>
         )}
 
@@ -953,7 +1042,10 @@ export default function TradingWorkspace() {
 
   const selectedSymbol = activePane.symbol;
   const activeAsset = getAssetConfig(selectedSymbol);
-  const isLiveCapable = isHyperliquidAsset(selectedSymbol);
+  const isLiveCapable = isHyperliquidAsset(selectedSymbol) || isPollingAsset(selectedSymbol);
+  const activeFeedLabel = isHyperliquidAsset(selectedSymbol)
+    ? "HYPERLIQUID LIVE"
+    : `${activeAsset.source.toUpperCase()} LIVE`;
 
   return (
     <div className="dark">
@@ -1000,7 +1092,7 @@ export default function TradingWorkspace() {
                 isLiveCapable ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-[#1f1f23] bg-[#09090b] text-zinc-400"
               }`}>
                 {isLiveCapable ? <Wifi className="h-4 w-4" aria-hidden="true" /> : <WifiOff className="h-4 w-4" aria-hidden="true" />}
-                {isLiveCapable ? "HYPERLIQUID LIVE" : `${activeAsset.source} DELAYED`}
+                {isLiveCapable ? activeFeedLabel : `${activeAsset.source} DELAYED`}
               </div>
 
               <div className="flex h-10 items-center gap-2 rounded border border-[#1f1f23] bg-[#09090b] px-3 text-xs font-semibold text-zinc-300">

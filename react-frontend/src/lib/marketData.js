@@ -4,11 +4,15 @@ export const ASSETS = [
   { symbol: "BTCUSD", label: "Bitcoin", source: "Hyperliquid", coin: "BTC", pricePrecision: 1 },
   { symbol: "ETHUSD", label: "Ethereum", source: "Hyperliquid", coin: "ETH", pricePrecision: 2 },
   { symbol: "SOLUSD", label: "Solana", source: "Hyperliquid", coin: "SOL", pricePrecision: 3 },
-  { symbol: "XAUUSD", label: "Gold Futures", source: "Yahoo", pricePrecision: 2 },
+  { symbol: "XAUUSD", label: "Gold Futures", source: "Yahoo Poll", pricePrecision: 2 },
   { symbol: "USTECH", label: "Nasdaq Futures", source: "Yahoo", pricePrecision: 2 },
   { symbol: "USOIL", label: "Crude Oil", source: "Yahoo", pricePrecision: 2 },
-  { symbol: "EURUSD", label: "Euro / Dollar", source: "Yahoo", pricePrecision: 5 },
-  { symbol: "GBPUSD", label: "Pound / Dollar", source: "Yahoo", pricePrecision: 5 },
+  { symbol: "EURUSD", label: "Euro / Dollar", source: "Yahoo Poll", pricePrecision: 5 },
+  { symbol: "EURJPY", label: "Euro / Yen", source: "Yahoo Poll", pricePrecision: 3 },
+  { symbol: "USDJPY", label: "Dollar / Yen", source: "Yahoo Poll", pricePrecision: 3 },
+  { symbol: "GBPJPY", label: "Pound / Yen", source: "Yahoo Poll", pricePrecision: 3 },
+  { symbol: "GBPUSD", label: "Pound / Dollar", source: "Yahoo Poll", pricePrecision: 5 },
+  { symbol: "AUDUSD", label: "Aussie / Dollar", source: "Yahoo Poll", pricePrecision: 5 },
 ];
 
 export const HYPERLIQUID_ASSETS = ASSETS
@@ -21,6 +25,10 @@ export function getAssetConfig(symbol) {
 
 export function isHyperliquidAsset(symbol) {
   return Boolean(HYPERLIQUID_ASSETS[symbol]);
+}
+
+export function isPollingAsset(symbol) {
+  return !isHyperliquidAsset(symbol);
 }
 
 export function resolutionToSeconds(resolution) {

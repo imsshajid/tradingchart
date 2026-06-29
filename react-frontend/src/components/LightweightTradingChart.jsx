@@ -104,7 +104,11 @@ const TOOL_TYPES = new Set([
   "cursor",
   "select",
   "trendline",
+  "ray",
+  "extended-line",
   "horizontal-line",
+  "horizontal-ray",
+  "vertical-line",
   "rectangle",
   "arrow",
   "fib-retracement",
@@ -370,7 +374,7 @@ function withCandleStyles(candles, candleStyles) {
 
 function toolRequiredPoints(type) {
   if (type === "cursor") return 0;
-  if (type === "horizontal-line") return 1;
+  if (type === "horizontal-line" || type === "horizontal-ray" || type === "vertical-line") return 1;
   if (type === "fib-extension") return 3;
   return 2;
 }
@@ -553,11 +557,29 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       context.stroke();
     }
 
+    if (tool.type === "vertical-line") {
+      context.beginPath();
+      context.moveTo(points[0].x, 0);
+      context.lineTo(points[0].x, context.canvas.clientHeight);
+      context.stroke();
+    }
+
+    if (tool.type === "horizontal-ray") {
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      context.lineTo(context.canvas.clientWidth, points[0].y);
+      context.stroke();
+    }
+
     if (tool.type === "trendline" && points[1]) {
       context.beginPath();
       context.moveTo(points[0].x, points[0].y);
       context.lineTo(points[1].x, points[1].y);
       context.stroke();
+    }
+
+    if ((tool.type === "ray" || tool.type === "extended-line") && points[1]) {
+      drawExtendedLine(context, points[0], points[1], tool.type === "ray");
     }
 
     if (tool.type === "rectangle" && points[1]) {
@@ -681,6 +703,14 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         return { tool, handleIndex: null, cursor };
       }
 
+      if (tool.type === "vertical-line" && points[0] && Math.abs(points[0].x - cursor.x) <= 6) {
+        return { tool, handleIndex: null, cursor };
+      }
+
+      if (tool.type === "horizontal-ray" && points[0] && cursor.x >= points[0].x && Math.abs(points[0].y - cursor.y) <= 6) {
+        return { tool, handleIndex: null, cursor };
+      }
+
       if (points[0] && points[1] && distanceToSegment(cursor, points[0], points[1]) <= 7) {
         return { tool, handleIndex: null, cursor };
       }
@@ -758,6 +788,9 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     },
     fitContent() {
       chartRef.current?.timeScale().fitContent();
+    },
+    scrollToRealTime() {
+      chartRef.current?.timeScale().scrollToRealTime();
     },
   }), [emitToolsChange, fibLevels, selectedToolId, tools]);
 
@@ -1211,6 +1244,31 @@ function drawArrow(context, start, end) {
   );
   context.closePath();
   context.fill();
+}
+
+function drawExtendedLine(context, start, end, rayOnly) {
+  const width = context.canvas.clientWidth;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+
+  if (Math.abs(dx) < 0.001) {
+    context.beginPath();
+    context.moveTo(start.x, rayOnly ? start.y : 0);
+    context.lineTo(start.x, rayOnly ? context.canvas.clientHeight : context.canvas.clientHeight);
+    context.stroke();
+    return;
+  }
+
+  const slope = dy / dx;
+  const leftX = rayOnly ? start.x : 0;
+  const rightX = width;
+  const leftY = start.y + slope * (leftX - start.x);
+  const rightY = start.y + slope * (rightX - start.x);
+
+  context.beginPath();
+  context.moveTo(leftX, leftY);
+  context.lineTo(rightX, rightY);
+  context.stroke();
 }
 
 function drawFibRetracement(context, start, end, levels, tool) {
