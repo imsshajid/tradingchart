@@ -66,9 +66,10 @@ export function normalizeTimestamp(timestamp) {
   return numeric > 1_000_000_000_000 ? Math.floor(numeric / 1000) : Math.floor(numeric);
 }
 
-export function formatReplayTime(timestamp) {
+export function formatReplayTime(timestamp, timezone = "Asia/Dhaka") {
   if (!timestamp) return "--";
   return new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
     month: "short",
     day: "2-digit",
     hour: "2-digit",

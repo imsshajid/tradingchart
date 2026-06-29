@@ -44,7 +44,30 @@ const DEFAULT_CANDLE_OPTIONS = {
   wickColor: "#94a3b8",
 };
 
+const DEFAULT_CHART_SETTINGS = {
+  gridVisible: true,
+  verticalGridVisible: true,
+  horizontalGridVisible: true,
+  crosshairVisible: true,
+  barSpacing: 6,
+  rightOffset: 8,
+};
+
+const DEFAULT_VOLUME_SETTINGS = {
+  visible: true,
+  heightRatio: 0.22,
+  opacity: 0.38,
+  upColor: "#10b981",
+  downColor: "#f43f5e",
+};
+
 const DEFAULT_INDICATORS = {
+  sma: {
+    enabled: false,
+    length: 50,
+    source: "close",
+    color: "#f8fafc",
+  },
   ema: {
     enabled: true,
     length: 21,
@@ -67,10 +90,18 @@ const DEFAULT_INDICATORS = {
     kColor: "#a78bfa",
     dColor: "#f472b6",
   },
+  fvg: {
+    enabled: true,
+    minGapPercent: 0,
+    extendBars: 18,
+    bullColor: "rgba(16, 185, 129, 0.16)",
+    bearColor: "rgba(244, 63, 94, 0.16)",
+  },
 };
 
 const DEFAULT_FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618];
 const TOOL_TYPES = new Set([
+  "cursor",
   "select",
   "trendline",
   "horizontal-line",
@@ -78,6 +109,7 @@ const TOOL_TYPES = new Set([
   "arrow",
   "fib-retracement",
   "fib-extension",
+  "position",
 ]);
 
 function getTheme(theme) {
@@ -95,6 +127,47 @@ function createId(prefix = "tool") {
 function clampNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function hexToRgb(hex) {
+  const clean = String(hex || "#ffffff").replace("#", "");
+  const value = Number.parseInt(clean.length === 3
+    ? clean.split("").map((char) => char + char).join("")
+    : clean, 16);
+
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
+}
+
+function rgbaFromHex(hex, alpha) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, Number(alpha)))})`;
+}
+
+function timeToUnixSeconds(time) {
+  if (typeof time === "number") return time;
+  if (time && typeof time === "object" && "year" in time) {
+    return Math.floor(Date.UTC(time.year, time.month - 1, time.day) / 1000);
+  }
+
+  return null;
+}
+
+function formatChartTime(time, timezone = "UTC") {
+  const seconds = timeToUnixSeconds(time);
+  if (seconds === null) return "";
+
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(seconds * 1000));
 }
 
 function getSourceValue(candle, source = "close") {
@@ -125,6 +198,80 @@ export function calculateEma(candles, { length = 21, source = "close", smoothing
   });
 
   return output;
+}
+
+export function calculateSma(candles, { length = 50, source = "close" } = {}) {
+  const period = Math.max(1, Math.floor(length));
+  const output = [];
+  let sum = 0;
+  const values = [];
+
+  candles.forEach((candle) => {
+    const value = getSourceValue(candle, source);
+    values.push(value);
+
+    if (!Number.isFinite(value)) return;
+
+    sum += value;
+    if (values.length > period) {
+      sum -= values[values.length - period - 1];
+    }
+
+    if (values.length >= period) {
+      output.push({ time: candle.time, value: Number((sum / period).toFixed(6)) });
+    }
+  });
+
+  return output;
+}
+
+export function calculateFairValueGaps(
+  candles,
+  { minGapPercent = 0, extendBars = 18 } = {},
+) {
+  const minPercent = Math.max(0, Number(minGapPercent) || 0);
+  const extension = Math.max(1, Math.floor(extendBars));
+  const gaps = [];
+
+  for (let index = 2; index < candles.length; index += 1) {
+    const candleOne = candles[index - 2];
+    const candleThree = candles[index];
+    const endCandle = candles[Math.min(candles.length - 1, index + extension)] || candleThree;
+
+    if (![candleOne?.high, candleOne?.low, candleThree?.high, candleThree?.low].every(Number.isFinite)) {
+      continue;
+    }
+
+    if (candleOne.high < candleThree.low) {
+      const gapPercent = ((candleThree.low - candleOne.high) / candleOne.high) * 100;
+      if (gapPercent >= minPercent) {
+        gaps.push({
+          id: `bull-${candleThree.time}`,
+          type: "bullish",
+          startTime: candleOne.time,
+          endTime: endCandle.time,
+          top: candleThree.low,
+          bottom: candleOne.high,
+        });
+      }
+    }
+
+    if (candleOne.low > candleThree.high) {
+      const gapPercent = ((candleOne.low - candleThree.high) / candleOne.low) * 100;
+      if (gapPercent >= minPercent) {
+        gaps.push({
+          id: `bear-${candleThree.time}`,
+          type: "bearish",
+          startTime: candleOne.time,
+          endTime: endCandle.time,
+          top: candleOne.low,
+          bottom: candleThree.high,
+        });
+      }
+    }
+  }
+
+  return gaps;
 }
 
 export function calculateRsi(candles, { period = 14, source = "close" } = {}) {
@@ -222,6 +369,7 @@ function withCandleStyles(candles, candleStyles) {
 }
 
 function toolRequiredPoints(type) {
+  if (type === "cursor") return 0;
   if (type === "horizontal-line") return 1;
   if (type === "fib-extension") return 3;
   return 2;
@@ -246,11 +394,15 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     indicatorSettings = DEFAULT_INDICATORS,
     fibLevels = DEFAULT_FIB_LEVELS,
     initialTools = [],
-    activeTool = "select",
+    activeTool = "cursor",
     onToolsChange,
     showToolBadge = true,
     fitContentToken,
     followLive = true,
+    chartSettings = DEFAULT_CHART_SETTINGS,
+    volumeSettings = DEFAULT_VOLUME_SETTINGS,
+    timezone = "UTC",
+    onChartTimeClick,
     className = "",
   },
   ref,
@@ -261,6 +413,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
+  const smaSeriesRef = useRef(null);
   const emaSeriesRef = useRef(null);
   const rsiSeriesRef = useRef(null);
   const stochasticKSeriesRef = useRef(null);
@@ -269,8 +422,9 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const interactionRef = useRef(null);
   const lastFitTokenRef = useRef(fitContentToken);
   const hasInitialFitRef = useRef(false);
+  const onChartTimeClickRef = useRef(onChartTimeClick);
   const redrawOverlayRef = useRef(() => {});
-  const [toolMode, setToolMode] = useState(TOOL_TYPES.has(activeTool) ? activeTool : "select");
+  const [toolMode, setToolMode] = useState(TOOL_TYPES.has(activeTool) ? activeTool : "cursor");
   const [tools, setTools] = useState(initialTools);
   const [selectedToolId, setSelectedToolId] = useState(null);
   const [draftTool, setDraftTool] = useState(null);
@@ -282,11 +436,21 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   );
   const mergedIndicators = useMemo(
     () => ({
+      sma: { ...DEFAULT_INDICATORS.sma, ...indicatorSettings.sma },
       ema: { ...DEFAULT_INDICATORS.ema, ...indicatorSettings.ema },
       rsi: { ...DEFAULT_INDICATORS.rsi, ...indicatorSettings.rsi },
       stochastic: { ...DEFAULT_INDICATORS.stochastic, ...indicatorSettings.stochastic },
+      fvg: { ...DEFAULT_INDICATORS.fvg, ...indicatorSettings.fvg },
     }),
     [indicatorSettings],
+  );
+  const mergedChartSettings = useMemo(
+    () => ({ ...DEFAULT_CHART_SETTINGS, ...chartSettings }),
+    [chartSettings],
+  );
+  const mergedVolumeSettings = useMemo(
+    () => ({ ...DEFAULT_VOLUME_SETTINGS, ...volumeSettings }),
+    [volumeSettings],
   );
 
   const styledData = useMemo(() => withCandleStyles(data, barStyles), [data, barStyles]);
@@ -294,10 +458,16 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     () => data.map((candle) => ({
       time: candle.time,
       value: candle.volume ?? 0,
-      color: candle.close >= candle.open ? "rgba(16, 185, 129, 0.38)" : "rgba(244, 63, 94, 0.38)",
+      color: candle.close >= candle.open
+        ? rgbaFromHex(mergedVolumeSettings.upColor, mergedVolumeSettings.opacity)
+        : rgbaFromHex(mergedVolumeSettings.downColor, mergedVolumeSettings.opacity),
     })),
-    [data],
+    [data, mergedVolumeSettings.downColor, mergedVolumeSettings.opacity, mergedVolumeSettings.upColor],
   );
+  const smaData = useMemo(() => {
+    if (!mergedIndicators.sma.enabled) return [];
+    return calculateSma(data, mergedIndicators.sma);
+  }, [data, mergedIndicators.sma]);
   const emaData = useMemo(() => {
     if (!mergedIndicators.ema.enabled) return [];
     return calculateEma(data, mergedIndicators.ema);
@@ -310,6 +480,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     if (!mergedIndicators.stochastic.enabled) return { k: [], d: [] };
     return calculateStochastic(data, mergedIndicators.stochastic);
   }, [data, mergedIndicators.stochastic]);
+  const fvgData = useMemo(() => {
+    if (!mergedIndicators.fvg.enabled) return [];
+    return calculateFairValueGaps(data, mergedIndicators.fvg);
+  }, [data, mergedIndicators.fvg]);
 
   const emitToolsChange = useCallback((nextTools) => {
     onToolsChange?.(nextTools);
@@ -407,6 +581,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       drawFibExtension(context, points[0], points[1], points[2], levels, tool);
     }
 
+    if (tool.type === "position" && points[1] && points[2]) {
+      drawPositionTool(context, points[0], points[1], points[2], tool);
+    }
+
     if (selected) {
       context.setLineDash([]);
       context.fillStyle = "#60a5fa";
@@ -420,6 +598,35 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     context.restore();
   }, [dataPointToCanvasPoint, fibLevels]);
 
+  const drawFairValueGap = useCallback((context, gap) => {
+    const topLeft = dataPointToCanvasPoint({ time: gap.startTime, price: gap.top });
+    const bottomRight = dataPointToCanvasPoint({ time: gap.endTime, price: gap.bottom });
+    if (!topLeft || !bottomRight) return;
+
+    const x = Math.min(topLeft.x, bottomRight.x);
+    const y = Math.min(topLeft.y, bottomRight.y);
+    const width = Math.abs(bottomRight.x - topLeft.x);
+    const height = Math.abs(bottomRight.y - topLeft.y);
+
+    if (width < 1 || height < 1) return;
+
+    context.save();
+    context.fillStyle = gap.type === "bullish"
+      ? mergedIndicators.fvg.bullColor
+      : mergedIndicators.fvg.bearColor;
+    context.strokeStyle = gap.type === "bullish"
+      ? "rgba(16, 185, 129, 0.36)"
+      : "rgba(244, 63, 94, 0.36)";
+    context.lineWidth = 1;
+    context.fillRect(x, y, width, height);
+    context.strokeRect(x, y, width, height);
+    context.restore();
+  }, [
+    dataPointToCanvasPoint,
+    mergedIndicators.fvg.bearColor,
+    mergedIndicators.fvg.bullColor,
+  ]);
+
   const redrawOverlay = useCallback(() => {
     resize();
     const overlay = overlayRef.current;
@@ -432,6 +639,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width / ratio, height / ratio);
 
+    fvgData.forEach((gap) => drawFairValueGap(context, gap));
     tools.forEach((tool) => drawTool(context, tool, tool.id === selectedToolId));
 
     if (draftTool) {
@@ -442,11 +650,15 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       };
       drawTool(context, preview, true);
     }
-  }, [draftPoint, draftTool, drawTool, resize, selectedToolId, tools]);
+  }, [draftPoint, draftTool, drawFairValueGap, drawTool, fvgData, resize, selectedToolId, tools]);
 
   useEffect(() => {
     redrawOverlayRef.current = redrawOverlay;
   }, [redrawOverlay]);
+
+  useEffect(() => {
+    onChartTimeClickRef.current = onChartTimeClick;
+  }, [onChartTimeClick]);
 
   const hitTestTool = useCallback((event) => {
     const overlay = overlayRef.current;
@@ -514,7 +726,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       });
     },
     setToolMode(mode) {
-      setToolMode(TOOL_TYPES.has(mode) ? mode : "select");
+      setToolMode(TOOL_TYPES.has(mode) ? mode : "cursor");
       setDraftTool(null);
       setDraftPoint(null);
     },
@@ -550,7 +762,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }), [emitToolsChange, fibLevels, selectedToolId, tools]);
 
   useEffect(() => {
-    setToolMode(TOOL_TYPES.has(activeTool) ? activeTool : "select");
+    setToolMode(TOOL_TYPES.has(activeTool) ? activeTool : "cursor");
   }, [activeTool]);
 
   useEffect(() => {
@@ -568,16 +780,24 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
       },
       grid: {
-        vertLines: { color: themeConfig.grid },
-        horzLines: { color: themeConfig.grid },
+        vertLines: {
+          color: themeConfig.grid,
+          visible: mergedChartSettings.gridVisible && mergedChartSettings.verticalGridVisible,
+        },
+        horzLines: {
+          color: themeConfig.grid,
+          visible: mergedChartSettings.gridVisible && mergedChartSettings.horizontalGridVisible,
+        },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
+          visible: mergedChartSettings.crosshairVisible,
           color: themeConfig.crosshair,
           labelBackgroundColor: themeConfig.panel,
         },
         horzLine: {
+          visible: mergedChartSettings.crosshairVisible,
           color: themeConfig.crosshair,
           labelBackgroundColor: themeConfig.panel,
         },
@@ -590,6 +810,18 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         borderColor: themeConfig.grid,
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: mergedChartSettings.rightOffset,
+        barSpacing: mergedChartSettings.barSpacing,
+        tickMarkFormatter: (time) => formatChartTime(time, timezone),
+      },
+      localization: {
+        timeFormatter: (time) => formatChartTime(time, timezone),
+      },
+      handleScroll: true,
+      handleScale: true,
+      kineticScroll: {
+        touch: true,
+        mouse: true,
       },
     });
 
@@ -599,6 +831,11 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
       lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    smaSeriesRef.current = chart.addSeries(LineSeries, {
+      color: mergedIndicators.sma.color,
+      lineWidth: 2,
       priceLineVisible: false,
     });
     emaSeriesRef.current = chart.addSeries(LineSeries, {
@@ -626,8 +863,12 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     });
 
     chart.priceScale("volume").applyOptions({
-      scaleMargins: { top: 0.78, bottom: 0 },
+      scaleMargins: {
+        top: Math.max(0.55, 1 - Math.max(0.08, Math.min(0.42, mergedVolumeSettings.heightRatio))),
+        bottom: 0,
+      },
       borderVisible: false,
+      visible: mergedVolumeSettings.visible,
     });
     chart.priceScale("rsi").applyOptions({
       scaleMargins: { top: 0.58, bottom: 0.22 },
@@ -641,6 +882,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     });
 
     const redrawFromSubscription = () => redrawOverlayRef.current();
+    const clickSubscription = (param) => {
+      const seconds = timeToUnixSeconds(param?.time);
+      if (seconds !== null) onChartTimeClickRef.current?.(seconds);
+    };
 
     resizeObserverRef.current = new ResizeObserver(() => {
       resize();
@@ -648,16 +893,19 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     });
     resizeObserverRef.current.observe(host);
     chart.timeScale().subscribeVisibleLogicalRangeChange(redrawFromSubscription);
+    chart.subscribeClick(clickSubscription);
     resize();
 
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(redrawFromSubscription);
+      chart.unsubscribeClick(clickSubscription);
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      smaSeriesRef.current = null;
       emaSeriesRef.current = null;
       rsiSeriesRef.current = null;
       stochasticKSeriesRef.current = null;
@@ -678,18 +926,41 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         textColor: themeConfig.text,
       },
       grid: {
-        vertLines: { color: themeConfig.grid },
-        horzLines: { color: themeConfig.grid },
+        vertLines: {
+          color: themeConfig.grid,
+          visible: mergedChartSettings.gridVisible && mergedChartSettings.verticalGridVisible,
+        },
+        horzLines: {
+          color: themeConfig.grid,
+          visible: mergedChartSettings.gridVisible && mergedChartSettings.horizontalGridVisible,
+        },
       },
       crosshair: {
-        vertLine: { color: themeConfig.crosshair, labelBackgroundColor: themeConfig.panel },
-        horzLine: { color: themeConfig.crosshair, labelBackgroundColor: themeConfig.panel },
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          visible: mergedChartSettings.crosshairVisible,
+          color: themeConfig.crosshair,
+          labelBackgroundColor: themeConfig.panel,
+        },
+        horzLine: {
+          visible: mergedChartSettings.crosshairVisible,
+          color: themeConfig.crosshair,
+          labelBackgroundColor: themeConfig.panel,
+        },
       },
       rightPriceScale: { borderColor: themeConfig.grid },
-      timeScale: { borderColor: themeConfig.grid },
+      timeScale: {
+        borderColor: themeConfig.grid,
+        rightOffset: mergedChartSettings.rightOffset,
+        barSpacing: mergedChartSettings.barSpacing,
+        tickMarkFormatter: (time) => formatChartTime(time, timezone),
+      },
+      localization: {
+        timeFormatter: (time) => formatChartTime(time, timezone),
+      },
     });
     redrawOverlay();
-  }, [redrawOverlay, theme]);
+  }, [mergedChartSettings, redrawOverlay, theme, timezone]);
 
   useEffect(() => {
     candleSeriesRef.current?.applyOptions(mergedCandleOptions);
@@ -697,7 +968,15 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
   useEffect(() => {
     candleSeriesRef.current?.setData(styledData);
-    volumeSeriesRef.current?.setData(volumeData);
+    volumeSeriesRef.current?.setData(mergedVolumeSettings.visible ? volumeData : []);
+    chartRef.current?.priceScale("volume").applyOptions({
+      scaleMargins: {
+        top: Math.max(0.55, 1 - Math.max(0.08, Math.min(0.42, mergedVolumeSettings.heightRatio))),
+        bottom: 0,
+      },
+      borderVisible: false,
+      visible: mergedVolumeSettings.visible,
+    });
     if (followLive) {
       chartRef.current?.timeScale().scrollToRealTime();
     }
@@ -706,7 +985,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       chartRef.current?.timeScale().fitContent();
     }
     redrawOverlay();
-  }, [followLive, redrawOverlay, styledData, volumeData]);
+  }, [followLive, mergedVolumeSettings.heightRatio, mergedVolumeSettings.visible, redrawOverlay, styledData, volumeData]);
 
   useEffect(() => {
     if (lastFitTokenRef.current === fitContentToken) return;
@@ -716,11 +995,17 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }, [fitContentToken, redrawOverlay]);
 
   useEffect(() => {
+    smaSeriesRef.current?.applyOptions({ color: mergedIndicators.sma.color });
+    smaSeriesRef.current?.setData(smaData);
+  }, [mergedIndicators.sma.color, smaData]);
+
+  useEffect(() => {
     emaSeriesRef.current?.applyOptions({ color: mergedIndicators.ema.color });
     emaSeriesRef.current?.setData(emaData);
   }, [emaData, mergedIndicators.ema.color]);
 
   useEffect(() => {
+    chartRef.current?.priceScale("rsi").applyOptions({ visible: Boolean(mergedIndicators.rsi.enabled) });
     rsiSeriesRef.current?.applyOptions({ color: mergedIndicators.rsi.color });
     rsiSeriesRef.current?.setData(rsiData);
 
@@ -751,6 +1036,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }, [mergedIndicators.rsi.color, mergedIndicators.rsi.overbought, mergedIndicators.rsi.oversold, rsiData]);
 
   useEffect(() => {
+    chartRef.current?.priceScale("oscillator").applyOptions({ visible: Boolean(mergedIndicators.stochastic.enabled) });
     stochasticKSeriesRef.current?.applyOptions({ color: mergedIndicators.stochastic.kColor });
     stochasticDSeriesRef.current?.applyOptions({ color: mergedIndicators.stochastic.dColor });
     stochasticKSeriesRef.current?.setData(stochasticData.k);
@@ -776,6 +1062,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const handlePointerDown = useCallback((event) => {
     const point = canvasPointToDataPoint(event);
     if (!point) return;
+
+    if (toolMode === "cursor") return;
 
     if (toolMode === "select") {
       const hit = hitTestTool(event);
@@ -881,6 +1169,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       <canvas
         ref={overlayRef}
         className="absolute inset-0 cursor-crosshair"
+        style={{ pointerEvents: toolMode === "cursor" ? "none" : "auto" }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -953,6 +1242,47 @@ function drawFibExtension(context, start, end, anchor, levels, tool) {
     context.fillStyle = tool.labelColor || context.strokeStyle;
     context.fillText(String(level), right + 6, y - 3);
   });
+}
+
+function drawPositionTool(context, entry, target, stop, tool) {
+  const left = Math.min(entry.x, target.x, stop.x);
+  const right = Math.max(entry.x, target.x, stop.x);
+  const rewardTop = Math.min(entry.y, target.y);
+  const rewardHeight = Math.abs(target.y - entry.y);
+  const riskTop = Math.min(entry.y, stop.y);
+  const riskHeight = Math.abs(stop.y - entry.y);
+  const isShort = tool.direction === "short";
+
+  context.save();
+  context.setLineDash([]);
+  context.fillStyle = isShort ? "rgba(244, 63, 94, 0.18)" : "rgba(16, 185, 129, 0.18)";
+  context.fillRect(left, rewardTop, right - left, rewardHeight);
+  context.fillStyle = isShort ? "rgba(16, 185, 129, 0.14)" : "rgba(244, 63, 94, 0.14)";
+  context.fillRect(left, riskTop, right - left, riskHeight);
+
+  context.strokeStyle = tool.color || "#d4d4d8";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(left, entry.y);
+  context.lineTo(right, entry.y);
+  context.stroke();
+
+  context.strokeStyle = isShort ? "#f43f5e" : "#10b981";
+  context.beginPath();
+  context.moveTo(left, target.y);
+  context.lineTo(right, target.y);
+  context.stroke();
+
+  context.strokeStyle = isShort ? "#10b981" : "#f43f5e";
+  context.beginPath();
+  context.moveTo(left, stop.y);
+  context.lineTo(right, stop.y);
+  context.stroke();
+
+  context.fillStyle = "#f8fafc";
+  context.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  context.fillText(isShort ? "SHORT" : "LONG", left + 6, entry.y - 7);
+  context.restore();
 }
 
 export default LightweightTradingChart;
