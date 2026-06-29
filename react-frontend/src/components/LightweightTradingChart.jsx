@@ -763,6 +763,67 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     return { time, price };
   }, []);
 
+  const selectedTool = useMemo(
+    () => tools.find((tool) => tool.id === selectedToolId) || null,
+    [selectedToolId, tools],
+  );
+
+  const getToolBounds = useCallback((tool) => {
+    const overlay = overlayRef.current;
+    if (!overlay || !tool?.points?.length) return null;
+
+    const width = overlay.clientWidth;
+    const height = overlay.clientHeight;
+    const points = tool.points.map(dataPointToCanvasPoint).filter(Boolean);
+    const firstPriceY = priceToCanvasY(tool.points[0]?.price);
+
+    if (tool.type === "horizontal-line" && firstPriceY !== null) {
+      return { left: 0, right: width, top: firstPriceY, bottom: firstPriceY };
+    }
+
+    if (tool.type === "vertical-line" && points[0]) {
+      return { left: points[0].x, right: points[0].x, top: 0, bottom: height };
+    }
+
+    if (!points.length) return null;
+
+    return {
+      left: Math.min(...points.map((point) => point.x)),
+      right: Math.max(...points.map((point) => point.x)),
+      top: Math.min(...points.map((point) => point.y)),
+      bottom: Math.max(...points.map((point) => point.y)),
+    };
+  }, [dataPointToCanvasPoint, priceToCanvasY]);
+
+  const updateSelectedToolbarPosition = useCallback(() => {
+    const overlay = overlayRef.current;
+    if (!overlay || !selectedTool) {
+      setSelectedToolbarPosition(null);
+      return;
+    }
+
+    const bounds = getToolBounds(selectedTool);
+    if (!bounds) {
+      setSelectedToolbarPosition(null);
+      return;
+    }
+
+    const toolbarWidth = 294;
+    const x = Math.max(10, Math.min(
+      overlay.clientWidth - toolbarWidth - 10,
+      (bounds.left + bounds.right) / 2 - toolbarWidth / 2,
+    ));
+    const y = Math.max(10, Math.min(
+      overlay.clientHeight - 50,
+      bounds.top - 52,
+    ));
+    const next = { x: Math.round(x), y: Math.round(y) };
+
+    setSelectedToolbarPosition((current) => (
+      current?.x === next.x && current?.y === next.y ? current : next
+    ));
+  }, [getToolBounds, selectedTool]);
+
   const drawTool = useCallback((context, tool, selected = false) => {
     if (tool.visible === false) return;
 
@@ -947,67 +1008,6 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   useEffect(() => {
     onToolSettingsRequestRef.current = onToolSettingsRequest;
   }, [onToolSettingsRequest]);
-
-  const selectedTool = useMemo(
-    () => tools.find((tool) => tool.id === selectedToolId) || null,
-    [selectedToolId, tools],
-  );
-
-  const getToolBounds = useCallback((tool) => {
-    const overlay = overlayRef.current;
-    if (!overlay || !tool?.points?.length) return null;
-
-    const width = overlay.clientWidth;
-    const height = overlay.clientHeight;
-    const points = tool.points.map(dataPointToCanvasPoint).filter(Boolean);
-    const firstPriceY = priceToCanvasY(tool.points[0]?.price);
-
-    if (tool.type === "horizontal-line" && firstPriceY !== null) {
-      return { left: 0, right: width, top: firstPriceY, bottom: firstPriceY };
-    }
-
-    if (tool.type === "vertical-line" && points[0]) {
-      return { left: points[0].x, right: points[0].x, top: 0, bottom: height };
-    }
-
-    if (!points.length) return null;
-
-    return {
-      left: Math.min(...points.map((point) => point.x)),
-      right: Math.max(...points.map((point) => point.x)),
-      top: Math.min(...points.map((point) => point.y)),
-      bottom: Math.max(...points.map((point) => point.y)),
-    };
-  }, [dataPointToCanvasPoint, priceToCanvasY]);
-
-  const updateSelectedToolbarPosition = useCallback(() => {
-    const overlay = overlayRef.current;
-    if (!overlay || !selectedTool) {
-      setSelectedToolbarPosition(null);
-      return;
-    }
-
-    const bounds = getToolBounds(selectedTool);
-    if (!bounds) {
-      setSelectedToolbarPosition(null);
-      return;
-    }
-
-    const toolbarWidth = 294;
-    const x = Math.max(10, Math.min(
-      overlay.clientWidth - toolbarWidth - 10,
-      (bounds.left + bounds.right) / 2 - toolbarWidth / 2,
-    ));
-    const y = Math.max(10, Math.min(
-      overlay.clientHeight - 50,
-      bounds.top - 52,
-    ));
-    const next = { x: Math.round(x), y: Math.round(y) };
-
-    setSelectedToolbarPosition((current) => (
-      current?.x === next.x && current?.y === next.y ? current : next
-    ));
-  }, [getToolBounds, selectedTool]);
 
   const patchSelectedTool = useCallback((patch) => {
     if (!selectedToolId) return;
