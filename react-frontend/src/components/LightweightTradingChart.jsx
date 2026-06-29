@@ -155,6 +155,14 @@ function createId(prefix = "tool") {
   return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 }
 
+function serializeTools(tools) {
+  try {
+    return JSON.stringify(tools);
+  } catch {
+    return "";
+  }
+}
+
 function clampNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -574,6 +582,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const onSelectedToolChangeRef = useRef(onSelectedToolChange);
   const onToolSettingsRequestRef = useRef(onToolSettingsRequest);
   const lastEmittedToolsRef = useRef(null);
+  const emittedToolSerializationsRef = useRef(new Set());
   const redrawOverlayRef = useRef(() => {});
   const [toolMode, setToolMode] = useState(TOOL_TYPES.has(activeTool) ? activeTool : "cursor");
   const [tools, setTools] = useState(() => (Array.isArray(initialTools) ? initialTools : []));
@@ -675,27 +684,27 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }, [onToolsChange]);
 
   useEffect(() => {
-    let serialized = "";
-    try {
-      serialized = JSON.stringify(tools);
-    } catch {
-      serialized = String(Date.now());
-    }
+    const serialized = serializeTools(tools) || String(Date.now());
 
     if (lastEmittedToolsRef.current === serialized) return;
     lastEmittedToolsRef.current = serialized;
+    emittedToolSerializationsRef.current.add(serialized);
+    if (emittedToolSerializationsRef.current.size > 80) {
+      const first = emittedToolSerializationsRef.current.values().next().value;
+      emittedToolSerializationsRef.current.delete(first);
+    }
     onToolsChangeRef.current?.(tools);
   }, [tools]);
 
   useEffect(() => {
     if (!Array.isArray(initialTools)) return;
 
+    const serialized = serializeTools(initialTools);
+    if (serialized && emittedToolSerializationsRef.current.has(serialized)) return;
+
     setTools((current) => {
-      try {
-        return JSON.stringify(current) === JSON.stringify(initialTools) ? current : initialTools;
-      } catch {
-        return initialTools;
-      }
+      const currentSerialized = serializeTools(current);
+      return currentSerialized === serialized ? current : initialTools;
     });
   }, [initialTools]);
 
@@ -1083,6 +1092,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       toolId: hit.tool.id,
       handleIndex: hit.handleIndex,
       startPoint: point,
+      startCursor: hit.cursor,
+      hasMoved: false,
       originalTool: hit.tool,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -1120,6 +1131,41 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         return { tool, handleIndex: null, cursor };
       }
 
+      if (tool.type === "fib-retracement" && points[0] && points[1]) {
+        const left = Math.min(points[0].x, points[1].x);
+        const right = Math.max(points[0].x, points[1].x);
+        const top = Math.min(points[0].y, points[1].y);
+        const bottom = Math.max(points[0].y, points[1].y);
+        const levels = normalizeFibLevels(tool.levels || effectiveFibLevels, tool.color || DEFAULT_DRAWING_SETTINGS.fibColor);
+
+        for (const level of levels) {
+          if (level.visible === false) continue;
+          const y = points[0].y + (points[1].y - points[0].y) * Number(level.value);
+          if (cursor.x >= left - 8 && cursor.x <= right + 120 && Math.abs(y - cursor.y) <= 7) {
+            return { tool, handleIndex: null, cursor };
+          }
+        }
+
+        if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
+          return { tool, handleIndex: null, cursor };
+        }
+      }
+
+      if (tool.type === "fib-extension" && points[0] && points[1] && points[2]) {
+        const left = Math.min(points[1].x, points[2].x);
+        const right = Math.max(points[1].x, points[2].x) + 160;
+        const priceVectorY = points[1].y - points[0].y;
+        const levels = normalizeFibLevels(tool.levels || effectiveFibLevels, tool.color || DEFAULT_DRAWING_SETTINGS.fibColor);
+
+        for (const level of levels) {
+          if (level.visible === false) continue;
+          const y = points[2].y + priceVectorY * Number(level.value);
+          if (cursor.x >= left - 8 && cursor.x <= right + 120 && Math.abs(y - cursor.y) <= 7) {
+            return { tool, handleIndex: null, cursor };
+          }
+        }
+      }
+
       if (points[0] && points[1] && distanceToSegment(cursor, points[0], points[1]) <= 7) {
         return { tool, handleIndex: null, cursor };
       }
@@ -1136,7 +1182,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     }
 
     return null;
-  }, [dataPointToCanvasPoint, priceToCanvasY, tools]);
+  }, [dataPointToCanvasPoint, effectiveFibLevels, priceToCanvasY, tools]);
 
   useImperativeHandle(ref, () => ({
     get chart() {
@@ -1542,6 +1588,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
           toolId: hit.tool.id,
           handleIndex: hit.handleIndex,
           startPoint: point,
+          startCursor: hit.cursor,
+          hasMoved: false,
           originalTool: hit.tool,
         }
         : null;
@@ -1604,6 +1652,20 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
     const interaction = interactionRef.current;
     if (!interaction) return;
+
+    if (!interaction.hasMoved && interaction.startCursor) {
+      const overlay = overlayRef.current;
+      const rect = overlay?.getBoundingClientRect();
+      const cursor = rect
+        ? { x: event.clientX - rect.left, y: event.clientY - rect.top }
+        : null;
+
+      if (cursor && Math.hypot(cursor.x - interaction.startCursor.x, cursor.y - interaction.startCursor.y) < 4) {
+        return;
+      }
+
+      interaction.hasMoved = true;
+    }
 
     commitTools((current) => current.map((tool) => {
       if (tool.id !== interaction.toolId) return tool;

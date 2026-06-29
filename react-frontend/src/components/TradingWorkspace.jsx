@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   BarChart3,
   CandlestickChart,
+  ChevronRight,
   Clock3,
   Gauge,
   Layers,
@@ -46,19 +47,47 @@ import {
   updateCandleFromTrade,
 } from "../lib/marketData.js";
 
-const DRAWING_TOOLS = [
-  { id: "cursor", label: "Move / Pan", shortLabel: "Move", icon: MousePointer2 },
-  { id: "trendline", label: "Trendline", shortLabel: "Trend", icon: LineChart },
-  { id: "horizontal-line", label: "Horizontal Line", shortLabel: "HLine", icon: Activity },
-  { id: "vertical-line", label: "Vertical Line", shortLabel: "VLine", icon: Activity },
-  { id: "rectangle", label: "Rectangle", shortLabel: "Rect", icon: Square },
-  { id: "arrow", label: "Arrow", shortLabel: "Arrow", icon: ArrowUpRight },
-  { id: "fib-retracement", label: "Fib Retracement", shortLabel: "Fib", icon: Gauge },
+const DRAWING_TOOL_GROUPS = [
+  {
+    id: "cursor",
+    tools: [{ id: "cursor", label: "Move / Pan", shortLabel: "Move", icon: MousePointer2 }],
+  },
+  {
+    id: "trend",
+    tools: [
+      { id: "trendline", label: "Trendline", shortLabel: "Trend", icon: LineChart },
+      { id: "ray", label: "Ray", shortLabel: "Ray", icon: ArrowUpRight },
+      { id: "extended-line", label: "Extended Line", shortLabel: "Ext", icon: LineChart },
+    ],
+  },
+  {
+    id: "levels",
+    tools: [
+      { id: "horizontal-line", label: "Horizontal Line", shortLabel: "HLine", icon: Activity },
+      { id: "horizontal-ray", label: "Horizontal Ray", shortLabel: "HRay", icon: ArrowUpRight },
+      { id: "vertical-line", label: "Vertical Line", shortLabel: "VLine", icon: Activity },
+    ],
+  },
+  {
+    id: "shapes",
+    tools: [
+      { id: "rectangle", label: "Rectangle", shortLabel: "Rect", icon: Square },
+      { id: "arrow", label: "Arrow", shortLabel: "Arrow", icon: ArrowUpRight },
+    ],
+  },
+  {
+    id: "fib",
+    tools: [
+      { id: "fib-retracement", label: "Fib Retracement", shortLabel: "Fib", icon: Gauge },
+      { id: "fib-extension", label: "Fib Extension", shortLabel: "FibX", icon: Gauge },
+    ],
+  },
 ];
-const VISIBLE_DRAWING_TOOL_IDS = new Set(DRAWING_TOOLS.map((tool) => tool.id));
+const DRAWING_TOOLS = DRAWING_TOOL_GROUPS.flatMap((group) => group.tools);
+const DRAWING_TOOL_IDS = new Set(DRAWING_TOOLS.map((tool) => tool.id));
 
 function normalizeWorkspaceTool(tool) {
-  return VISIBLE_DRAWING_TOOL_IDS.has(tool) ? tool : "cursor";
+  return DRAWING_TOOL_IDS.has(tool) ? tool : "cursor";
 }
 
 const TIMEZONE_OPTIONS = [
@@ -919,20 +948,106 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
 }
 
 function DrawingToolbar({ activeTool, onToolChange, onClear }) {
+  const [openGroupId, setOpenGroupId] = useState(null);
+  const selectTool = (toolId) => {
+    onToolChange(toolId);
+    setOpenGroupId(null);
+  };
+
   return (
-    <aside className="flex w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[#1f1f23] bg-[#09090b] py-3">
-      {DRAWING_TOOLS.map((tool) => (
-        <IconButton
-          key={tool.id}
-          label={tool.label}
-          shortLabel={tool.shortLabel}
-          icon={tool.icon}
-          active={activeTool === tool.id}
-          onClick={() => onToolChange(tool.id)}
-        />
-      ))}
+    <aside className="relative z-40 flex w-16 shrink-0 flex-col items-center gap-1 overflow-visible border-r border-[#1f1f23] bg-[#09090b] py-3">
+      {DRAWING_TOOL_GROUPS.map((group) => {
+        const activeGroupTool = group.tools.find((tool) => tool.id === activeTool);
+        const displayTool = activeGroupTool || group.tools[0];
+        const Icon = displayTool.icon;
+        const active = Boolean(activeGroupTool);
+        const hasFlyout = group.tools.length > 1;
+
+        return (
+          <div
+            key={group.id}
+            className="relative"
+            onMouseEnter={() => {
+              if (hasFlyout) setOpenGroupId(group.id);
+            }}
+            onMouseLeave={() => {
+              if (openGroupId === group.id) setOpenGroupId(null);
+            }}
+          >
+            <button
+              type="button"
+              title={displayTool.label}
+              aria-label={displayTool.label}
+              onFocus={() => {
+                if (hasFlyout) setOpenGroupId(group.id);
+              }}
+              onClick={() => selectTool(displayTool.id)}
+              className={`relative grid h-11 w-12 place-items-center rounded border py-1 text-zinc-400 transition-none ${
+                active
+                  ? "border-emerald-500/70 bg-emerald-500/10 text-emerald-300"
+                  : "border-transparent hover:border-[#1f1f23] hover:bg-[#111114] hover:text-zinc-100"
+              }`}
+            >
+              <Icon className="h-4 w-4" aria-hidden="true" />
+              <span className="mt-0.5 text-[8px] font-semibold leading-none">{displayTool.shortLabel}</span>
+              {hasFlyout && <ChevronRight className="absolute right-0.5 top-1 h-2.5 w-2.5 text-zinc-600" aria-hidden="true" />}
+            </button>
+
+            {hasFlyout && (
+              <button
+                type="button"
+                title={`${displayTool.label} variants`}
+                aria-label={`${displayTool.label} variants`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenGroupId((current) => (current === group.id ? null : group.id));
+                }}
+                className="absolute -right-1 top-0 grid h-4 w-4 place-items-center rounded border border-[#1f1f23] bg-[#0c0c0e] text-zinc-500 hover:text-zinc-100"
+              >
+                <ChevronRight className="h-3 w-3" aria-hidden="true" />
+              </button>
+            )}
+
+            {hasFlyout && openGroupId === group.id && (
+              <div className="absolute left-[calc(100%+8px)] top-0 z-50 w-56 rounded-md border border-[#1f1f23] bg-[#0c0c0e] p-1.5 shadow-2xl">
+                {group.tools.map((tool) => {
+                  const ToolIcon = tool.icon;
+                  const selected = activeTool === tool.id;
+
+                  return (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      onClick={() => selectTool(tool.id)}
+                      className={`flex h-9 w-full items-center justify-between gap-3 rounded px-2 text-left text-xs ${
+                        selected
+                          ? "bg-emerald-500/10 text-emerald-300"
+                          : "text-zinc-300 hover:bg-[#151519] hover:text-white"
+                      }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <ToolIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        <span className="truncate">{tool.label}</span>
+                      </span>
+                      <span className="font-mono text-[10px] text-zinc-500">{tool.shortLabel}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
       <div className="my-1 h-px w-10 bg-[#1f1f23]" />
-      <IconButton label="Clear Drawings" shortLabel="Clear" icon={Trash2} onClick={onClear} />
+      <IconButton
+        label="Clear Drawings"
+        shortLabel="Clear"
+        icon={Trash2}
+        onClick={() => {
+          setOpenGroupId(null);
+          onClear();
+        }}
+      />
     </aside>
   );
 }
