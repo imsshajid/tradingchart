@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import LightweightTradingChart from "./LightweightTradingChart.jsx";
 import { useHyperliquidLive } from "../hooks/useHyperliquidLive.js";
+import { useWorkerMarketLive } from "../hooks/useWorkerMarketLive.js";
 import {
   ASSETS,
   TIMEFRAMES,
@@ -39,6 +40,7 @@ import {
   getAssetConfig,
   isHyperliquidAsset,
   isPollingAsset,
+  isTickDbAsset,
   mergeCandle,
   normalizeTimestamp,
   resolutionToSeconds,
@@ -46,18 +48,18 @@ import {
 } from "../lib/marketData.js";
 
 const DRAWING_TOOLS = [
-  { id: "cursor", label: "Move / Pan", icon: MousePointer2 },
-  { id: "select", label: "Select Drawings", icon: Crosshair },
-  { id: "trendline", label: "Trendline", icon: LineChart },
-  { id: "ray", label: "Ray", icon: LineChart },
-  { id: "extended-line", label: "Extended Line", icon: LineChart },
-  { id: "horizontal-line", label: "Horizontal Line", icon: Activity },
-  { id: "horizontal-ray", label: "Horizontal Ray", icon: Activity },
-  { id: "vertical-line", label: "Vertical Line", icon: Activity },
-  { id: "rectangle", label: "Rectangle", icon: Square },
-  { id: "arrow", label: "Arrow", icon: ArrowUpRight },
-  { id: "fib-retracement", label: "Fib Retracement", icon: Gauge },
-  { id: "fib-extension", label: "Fib Extension", icon: Gauge },
+  { id: "cursor", label: "Move / Pan", shortLabel: "Move", icon: MousePointer2 },
+  { id: "select", label: "Select Drawings", shortLabel: "Edit", icon: Crosshair },
+  { id: "trendline", label: "Trendline", shortLabel: "Trend", icon: LineChart },
+  { id: "ray", label: "Ray", shortLabel: "Ray", icon: ArrowUpRight },
+  { id: "extended-line", label: "Extended Line", shortLabel: "Ext", icon: LineChart },
+  { id: "horizontal-line", label: "Horizontal Line", shortLabel: "HLine", icon: Activity },
+  { id: "horizontal-ray", label: "Horizontal Ray", shortLabel: "HRay", icon: ArrowUpRight },
+  { id: "vertical-line", label: "Vertical Line", shortLabel: "VLine", icon: Activity },
+  { id: "rectangle", label: "Rectangle", shortLabel: "Rect", icon: Square },
+  { id: "arrow", label: "Arrow", shortLabel: "Arrow", icon: ArrowUpRight },
+  { id: "fib-retracement", label: "Fib Retracement", shortLabel: "Fib", icon: Gauge },
+  { id: "fib-extension", label: "Fib Extension", shortLabel: "FibX", icon: Gauge },
 ];
 
 const TIMEZONE_OPTIONS = [
@@ -186,7 +188,7 @@ function CountdownToBarClose({ resolution = "15m", latestTickTimestamp = Date.no
   );
 }
 
-function IconButton({ active = false, disabled = false, label, icon: Icon, onClick }) {
+function IconButton({ active = false, disabled = false, label, shortLabel, icon: Icon, onClick }) {
   return (
     <button
       type="button"
@@ -194,13 +196,16 @@ function IconButton({ active = false, disabled = false, label, icon: Icon, onCli
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className={`grid h-9 w-9 place-items-center rounded border text-zinc-400 transition-none ${
+      className={`grid place-items-center rounded border text-zinc-400 transition-none ${
+        shortLabel ? "h-11 w-12 py-1" : "h-9 w-9"
+      } ${
         active
           ? "border-emerald-500/70 bg-emerald-500/10 text-emerald-300"
           : "border-transparent hover:border-[#1f1f23] hover:bg-[#111114] hover:text-zinc-100"
       } ${disabled ? "cursor-not-allowed opacity-35" : ""}`}
     >
       <Icon className="h-4 w-4" aria-hidden="true" />
+      {shortLabel && <span className="mt-0.5 text-[8px] font-semibold leading-none">{shortLabel}</span>}
     </button>
   );
 }
@@ -418,18 +423,19 @@ function ColorInput({ label, value, onChange }) {
 
 function DrawingToolbar({ activeTool, onToolChange, onClear }) {
   return (
-    <aside className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-[#1f1f23] bg-[#09090b] py-3">
+    <aside className="flex w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[#1f1f23] bg-[#09090b] py-3">
       {DRAWING_TOOLS.map((tool) => (
         <IconButton
           key={tool.id}
           label={tool.label}
+          shortLabel={tool.shortLabel}
           icon={tool.icon}
           active={activeTool === tool.id}
           onClick={() => onToolChange(tool.id)}
         />
       ))}
-      <div className="my-1 h-px w-7 bg-[#1f1f23]" />
-      <IconButton label="Clear Drawings" icon={Trash2} onClick={onClear} />
+      <div className="my-1 h-px w-10 bg-[#1f1f23]" />
+      <IconButton label="Clear Drawings" shortLabel="Clear" icon={Trash2} onClick={onClear} />
     </aside>
   );
 }
@@ -469,7 +475,7 @@ function ChartPane({
         const payload = await fetchMarketHistory(config.symbol, config.resolution, controller.signal);
         setCandles(payload.data);
         setLastTick(payload.data[payload.data.length - 1] || null);
-        setMarketSource(payload.source === "hyperliquid" ? "Hyperliquid" : "Yahoo Poll");
+        setMarketSource(payload.source === "hyperliquid" ? "Hyperliquid" : isTickDbAsset(config.symbol) ? "TickDB" : "Yahoo Poll");
         setPollStatus(isPollingAsset(config.symbol) ? "live" : "idle");
         refit();
       } catch (error) {
@@ -517,8 +523,18 @@ function ChartPane({
     onTrade: handleLiveTrade,
   });
 
+  const workerLiveStatus = useWorkerMarketLive({
+    symbol: config.symbol,
+    enabled: !replayLocked && isTickDbAsset(config.symbol) && marketSource !== "loading",
+    onTick: handleLiveTrade,
+  });
+
   useEffect(() => {
-    if (replayLocked || !isPollingAsset(config.symbol) || marketSource === "loading") {
+    const tickDbFallback = isTickDbAsset(config.symbol)
+      && ["offline", "unconfigured", "error", "reconnecting"].includes(workerLiveStatus);
+    const shouldPoll = isPollingAsset(config.symbol) || tickDbFallback;
+
+    if (replayLocked || !shouldPoll || marketSource === "loading") {
       setPollStatus("idle");
       return undefined;
     }
@@ -558,7 +574,7 @@ function ChartPane({
       window.clearInterval(interval);
       controller?.abort();
     };
-  }, [config.resolution, config.symbol, marketSource, replayLocked]);
+  }, [config.resolution, config.symbol, marketSource, replayLocked, workerLiveStatus]);
 
   useEffect(() => {
     if (clearToolsSignal > 0) {
@@ -577,8 +593,10 @@ function ChartPane({
       ? "Pick start"
       : isHyperliquidAsset(config.symbol)
         ? liveStatus === "live" ? "Live ticks" : liveStatus
+        : isTickDbAsset(config.symbol)
+          ? workerLiveStatus === "live" ? "TickDB live" : pollStatus === "live" ? "Polling fallback" : workerLiveStatus
         : pollStatus === "live" ? "Polling live" : pollStatus === "polling" ? "Refreshing" : "Delayed";
-  const statusIsLive = liveLabel === "Live ticks" || liveLabel === "Polling live";
+  const statusIsLive = liveLabel === "Live ticks" || liveLabel === "TickDB live" || liveLabel === "Polling live" || liveLabel === "Polling fallback";
 
   useEffect(() => {
     if (!active) return;
@@ -864,7 +882,7 @@ function Watchlist({ activeSymbol, onSelect, snapshot }) {
               <p className="text-xs text-zinc-500">{asset.label}</p>
             </div>
             <span className={`rounded px-2 py-1 text-[10px] font-semibold uppercase ${
-              asset.source === "Hyperliquid" ? "bg-emerald-500/10 text-emerald-300" : "bg-zinc-500/10 text-zinc-400"
+              asset.source === "Hyperliquid" || asset.source === "TickDB" ? "bg-emerald-500/10 text-emerald-300" : "bg-zinc-500/10 text-zinc-400"
             }`}>
               {asset.source}
             </span>
@@ -1042,10 +1060,12 @@ export default function TradingWorkspace() {
 
   const selectedSymbol = activePane.symbol;
   const activeAsset = getAssetConfig(selectedSymbol);
-  const isLiveCapable = isHyperliquidAsset(selectedSymbol) || isPollingAsset(selectedSymbol);
+  const isLiveCapable = isHyperliquidAsset(selectedSymbol) || isTickDbAsset(selectedSymbol) || isPollingAsset(selectedSymbol);
   const activeFeedLabel = isHyperliquidAsset(selectedSymbol)
     ? "HYPERLIQUID LIVE"
-    : `${activeAsset.source.toUpperCase()} LIVE`;
+    : isTickDbAsset(selectedSymbol)
+      ? "TICKDB LIVE"
+      : `${activeAsset.source.toUpperCase()} LIVE`;
 
   return (
     <div className="dark">

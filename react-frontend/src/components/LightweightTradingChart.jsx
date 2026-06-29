@@ -379,6 +379,28 @@ function toolRequiredPoints(type) {
   return 2;
 }
 
+function defaultToolStyle(type) {
+  if (type === "fib-retracement" || type === "fib-extension") {
+    return {
+      color: "#38bdf8",
+      labelColor: "#bae6fd",
+      fill: "rgba(56, 189, 248, 0.08)",
+    };
+  }
+
+  if (type === "rectangle") {
+    return {
+      color: "#60a5fa",
+      fill: "rgba(96, 165, 250, 0.14)",
+    };
+  }
+
+  return {
+    color: "#f8fafc",
+    fill: "rgba(96, 165, 250, 0.12)",
+  };
+}
+
 function distanceToSegment(point, a, b) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -424,6 +446,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const stochasticDSeriesRef = useRef(null);
   const resizeObserverRef = useRef(null);
   const interactionRef = useRef(null);
+  const dataRef = useRef(data);
   const lastFitTokenRef = useRef(fitContentToken);
   const hasInitialFitRef = useRef(false);
   const onChartTimeClickRef = useRef(onChartTimeClick);
@@ -494,6 +517,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     return nextTools;
   }, [onToolsChange]);
 
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
   const resize = useCallback(() => {
     const host = chartHostRef.current;
     const chart = chartRef.current;
@@ -523,6 +550,12 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     return x === null || y === null ? null : { x, y };
   }, []);
 
+  const priceToCanvasY = useCallback((price) => {
+    const series = candleSeriesRef.current;
+    if (!series || !Number.isFinite(Number(price))) return null;
+    return series.priceToCoordinate(price);
+  }, []);
+
   const canvasPointToDataPoint = useCallback((event) => {
     const overlay = overlayRef.current;
     const chart = chartRef.current;
@@ -532,8 +565,17 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const rect = overlay.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    const time = chart.timeScale().coordinateToTime(x);
+    let time = chart.timeScale().coordinateToTime(x);
     const price = series.coordinateToPrice(y);
+
+    if (time === null && typeof chart.timeScale().coordinateToLogical === "function") {
+      const logical = chart.timeScale().coordinateToLogical(x);
+      const candles = dataRef.current;
+      if (Number.isFinite(logical) && candles.length) {
+        const index = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
+        time = candles[index]?.time ?? null;
+      }
+    }
 
     if (time === null || price === null) return null;
     return { time, price };
@@ -541,30 +583,31 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
   const drawTool = useCallback((context, tool, selected = false) => {
     const points = tool.points.map(dataPointToCanvasPoint).filter(Boolean);
-    if (!points.length) return;
+    const firstPriceY = priceToCanvasY(tool.points[0]?.price);
+    if (!points.length && firstPriceY === null) return;
 
     const levels = tool.levels || fibLevels;
     context.save();
-    context.lineWidth = selected ? 2 : 1.35;
+    context.lineWidth = selected ? 2.25 : 1.75;
     context.strokeStyle = selected ? "#60a5fa" : tool.color || "#94a3b8";
     context.fillStyle = tool.fill || "rgba(96, 165, 250, 0.12)";
     context.setLineDash(tool.dashed ? [6, 6] : []);
 
     if (tool.type === "horizontal-line") {
       context.beginPath();
-      context.moveTo(0, points[0].y);
-      context.lineTo(context.canvas.clientWidth, points[0].y);
+      context.moveTo(0, firstPriceY);
+      context.lineTo(context.canvas.clientWidth, firstPriceY);
       context.stroke();
     }
 
-    if (tool.type === "vertical-line") {
+    if (tool.type === "vertical-line" && points[0]) {
       context.beginPath();
       context.moveTo(points[0].x, 0);
       context.lineTo(points[0].x, context.canvas.clientHeight);
       context.stroke();
     }
 
-    if (tool.type === "horizontal-ray") {
+    if (tool.type === "horizontal-ray" && points[0]) {
       context.beginPath();
       context.moveTo(points[0].x, points[0].y);
       context.lineTo(context.canvas.clientWidth, points[0].y);
@@ -607,7 +650,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       drawPositionTool(context, points[0], points[1], points[2], tool);
     }
 
-    if (selected) {
+    if (selected && points.length) {
       context.setLineDash([]);
       context.fillStyle = "#60a5fa";
       points.forEach((point) => {
@@ -618,7 +661,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     }
 
     context.restore();
-  }, [dataPointToCanvasPoint, fibLevels]);
+  }, [dataPointToCanvasPoint, fibLevels, priceToCanvasY]);
 
   const drawFairValueGap = useCallback((context, gap) => {
     const topLeft = dataPointToCanvasPoint({ time: gap.startTime, price: gap.top });
@@ -692,6 +735,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     for (let toolIndex = tools.length - 1; toolIndex >= 0; toolIndex -= 1) {
       const tool = tools[toolIndex];
       const points = tool.points.map(dataPointToCanvasPoint).filter(Boolean);
+      const firstPriceY = priceToCanvasY(tool.points[0]?.price);
 
       for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
         if (Math.hypot(points[pointIndex].x - cursor.x, points[pointIndex].y - cursor.y) <= 8) {
@@ -699,7 +743,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         }
       }
 
-      if (tool.type === "horizontal-line" && points[0] && Math.abs(points[0].y - cursor.y) <= 6) {
+      if (tool.type === "horizontal-line" && firstPriceY !== null && Math.abs(firstPriceY - cursor.y) <= 6) {
         return { tool, handleIndex: null, cursor };
       }
 
@@ -727,7 +771,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     }
 
     return null;
-  }, [dataPointToCanvasPoint, tools]);
+  }, [dataPointToCanvasPoint, priceToCanvasY, tools]);
 
   useImperativeHandle(ref, () => ({
     get chart() {
@@ -1121,6 +1165,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
           type: toolMode,
           points: [point],
           levels: fibLevels,
+          ...defaultToolStyle(toolMode),
         };
         setTools((current) => emitToolsChange([...current, newTool]));
         setSelectedToolId(newTool.id);
@@ -1132,6 +1177,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         type: toolMode,
         points: [point],
         levels: fibLevels,
+        ...defaultToolStyle(toolMode),
       });
       setDraftPoint(point);
       return;

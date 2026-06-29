@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 export interface Env {
   MARKET_STREAM_ROOM: DurableObjectNamespace<MarketStreamRoom>;
   DATA_PROVIDER_BASE_URL?: string;
+  TICKDB_API_KEY?: string;
 }
 
 type Resolution = "1m" | "5m" | "15m" | "1h" | "4h" | "1D";
@@ -17,12 +18,13 @@ type OhlcvBar = {
 };
 
 type SubscribeMessage = {
-  action: "subscribe" | "unsubscribe";
+  action: "subscribe" | "unsubscribe" | "ping";
   symbol?: string;
 };
 
 type TickMessage = {
   type: "tick";
+  provider?: string;
   symbol: string;
   time: number;
   price: number;
@@ -68,7 +70,18 @@ const PROVIDER_SYMBOLS: Record<string, string> = {
   USTECH: "NQ=F",
   USOIL: "CL=F",
   EURUSD: "EURUSD=X",
+  EURJPY: "EURJPY=X",
+  USDJPY: "USDJPY=X",
+  GBPJPY: "GBPJPY=X",
   GBPUSD: "GBPUSD=X",
+  AUDUSD: "AUDUSD=X",
+};
+
+const TICKDB_REALTIME_URL = "wss://api.tickdb.ai/v1/realtime";
+
+const TICKDB_SYMBOLS: Record<string, string> = {
+  XAUUSD: "XAUUSD",
+  EURUSD: "EURUSD",
 };
 
 function json(payload: unknown, init: ResponseInit = {}) {
@@ -110,6 +123,62 @@ function parseTimestamp(value: string | null, label: string) {
 
 function providerSymbol(symbol: string) {
   return PROVIDER_SYMBOLS[symbol] || symbol;
+}
+
+function tickDbSymbol(symbol: string) {
+  return TICKDB_SYMBOLS[symbol] || null;
+}
+
+function publicSymbolFromTickDb(symbol: string) {
+  const normalized = symbol.trim().toUpperCase();
+  const match = Object.entries(TICKDB_SYMBOLS).find(([, provider]) => provider === normalized);
+  return match?.[0] || normalized;
+}
+
+function normalizeProviderTimestamp(value: unknown) {
+  if (typeof value === "string" && Number.isNaN(Number(value))) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
+  }
+
+  const number = Number(value);
+  if (!Number.isFinite(number)) return Math.floor(Date.now() / 1000);
+  return number > 1_000_000_000_000 ? Math.floor(number / 1000) : Math.floor(number);
+}
+
+function normalizeTickDbTicker(message: unknown): TickMessage[] {
+  const wrapper = message as {
+    channel?: string;
+    data?: unknown;
+    symbol?: string;
+  };
+  const payload = wrapper.data ?? message;
+  const entries = Array.isArray(payload) ? payload : [payload];
+
+  return entries
+    .map((entry) => {
+      const data = entry as Record<string, unknown>;
+      const rawSymbol = String(data.symbol ?? wrapper.symbol ?? "").toUpperCase();
+      const symbol = publicSymbolFromTickDb(rawSymbol);
+      const price = toFiniteNumber(data.last_price ?? data.price ?? data.last ?? data.close ?? data.mid);
+      if (!symbol || price === null) return null;
+
+      const bid = toFiniteNumber(data.bid_price ?? data.bid);
+      const ask = toFiniteNumber(data.ask_price ?? data.ask);
+      const volume = toFiniteNumber(data.volume ?? data.last_volume ?? data.size) ?? 0;
+
+      return {
+        type: "tick" as const,
+        provider: "TickDB",
+        symbol,
+        time: normalizeProviderTimestamp(data.timestamp ?? data.ts ?? data.time),
+        price,
+        volume,
+        bid: bid ?? undefined,
+        ask: ask ?? undefined,
+      };
+    })
+    .filter((tick): tick is TickMessage => Boolean(tick));
 }
 
 function isFiniteCandle(bar: {
@@ -328,11 +397,40 @@ function handleOptions() {
   });
 }
 
+function handleHealth(request: Request) {
+  const url = new URL(request.url);
+  const liveUrl = `wss://${url.host}/api/live`;
+
+  return json({
+    success: true,
+    service: "quantum-market-worker",
+    status: "ready",
+    routes: {
+      history: "/api/history?symbol=XAUUSD&resolution=1m&from=UNIX_SECONDS&to=UNIX_SECONDS",
+      live: "/api/live",
+    },
+    websocket: {
+      endpoint: liveUrl,
+      subscribe: { action: "subscribe", symbol: "XAUUSD" },
+      supportedLiveSymbols: Object.keys(TICKDB_SYMBOLS),
+    },
+  }, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") return handleOptions();
+
+    if (url.pathname === "/" && request.method === "GET") {
+      return handleHealth(request);
+    }
 
     if (url.pathname === "/api/history" && request.method === "GET") {
       return handleHistory(request, env, ctx);
@@ -350,6 +448,9 @@ export class MarketStreamRoom extends DurableObject<Env> {
   private subscriptions = new Map<WebSocket, Set<string>>();
   private timers = new Map<string, number>();
   private lastPrices = new Map<string, number>();
+  private tickDbSocket: WebSocket | null = null;
+  private tickDbReady = false;
+  private tickDbReconnectTimer: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -360,7 +461,11 @@ export class MarketStreamRoom extends DurableObject<Env> {
       this.subscriptions.set(ws, symbols);
 
       for (const symbol of symbols) {
-        this.ensureSymbolTimer(symbol);
+        if (tickDbSymbol(symbol)) {
+          this.ensureTickDbConnection();
+        } else {
+          this.ensureSymbolTimer(symbol);
+        }
       }
     }
   }
@@ -395,6 +500,11 @@ export class MarketStreamRoom extends DurableObject<Env> {
       return;
     }
 
+    if (parsed.action === "ping") {
+      ws.send(JSON.stringify({ type: "pong", time: Math.floor(Date.now() / 1000) }));
+      return;
+    }
+
     if (parsed.action !== "subscribe" && parsed.action !== "unsubscribe") {
       ws.send(JSON.stringify({ type: "error", error: "Unsupported action." }));
       return;
@@ -413,13 +523,23 @@ export class MarketStreamRoom extends DurableObject<Env> {
       current.add(symbol);
       this.subscriptions.set(ws, current);
       ws.serializeAttachment({ symbols: [...current] });
-      this.ensureSymbolTimer(symbol);
+      if (tickDbSymbol(symbol)) {
+        this.ensureTickDbConnection();
+        this.syncTickDbSubscriptions();
+      } else {
+        this.ensureSymbolTimer(symbol);
+      }
       ws.send(JSON.stringify({ type: "subscribed", symbol }));
     } else {
       current.delete(symbol);
       this.subscriptions.set(ws, current);
       ws.serializeAttachment({ symbols: [...current] });
-      this.stopSymbolTimerIfUnused(symbol);
+      if (tickDbSymbol(symbol)) {
+        this.syncTickDbSubscriptions();
+        this.closeTickDbIfUnused();
+      } else {
+        this.stopSymbolTimerIfUnused(symbol);
+      }
       ws.send(JSON.stringify({ type: "unsubscribed", symbol }));
     }
   }
@@ -430,7 +550,14 @@ export class MarketStreamRoom extends DurableObject<Env> {
     ws.close(code, reason);
 
     if (symbols) {
-      for (const symbol of symbols) this.stopSymbolTimerIfUnused(symbol);
+      for (const symbol of symbols) {
+        if (tickDbSymbol(symbol)) {
+          this.syncTickDbSubscriptions();
+          this.closeTickDbIfUnused();
+        } else {
+          this.stopSymbolTimerIfUnused(symbol);
+        }
+      }
     }
   }
 
@@ -439,8 +566,109 @@ export class MarketStreamRoom extends DurableObject<Env> {
     this.subscriptions.delete(ws);
 
     if (symbols) {
-      for (const symbol of symbols) this.stopSymbolTimerIfUnused(symbol);
+      for (const symbol of symbols) {
+        if (tickDbSymbol(symbol)) {
+          this.syncTickDbSubscriptions();
+          this.closeTickDbIfUnused();
+        } else {
+          this.stopSymbolTimerIfUnused(symbol);
+        }
+      }
     }
+  }
+
+  private activeTickDbSymbols() {
+    const symbols = new Set<string>();
+
+    for (const subscribed of this.subscriptions.values()) {
+      for (const symbol of subscribed) {
+        if (tickDbSymbol(symbol)) symbols.add(symbol);
+      }
+    }
+
+    return [...symbols];
+  }
+
+  private ensureTickDbConnection() {
+    const activeSymbols = this.activeTickDbSymbols();
+    if (!activeSymbols.length || this.tickDbSocket || this.tickDbReconnectTimer !== null) return;
+
+    if (!this.env.TICKDB_API_KEY) {
+      this.broadcastError("TickDB is not configured. Set the TICKDB_API_KEY Worker secret.");
+      return;
+    }
+
+    const url = new URL(TICKDB_REALTIME_URL);
+    url.searchParams.set("api_key", this.env.TICKDB_API_KEY);
+    const socket = new WebSocket(url.toString());
+
+    this.tickDbSocket = socket;
+    this.tickDbReady = false;
+
+    socket.addEventListener("open", () => {
+      this.tickDbReady = true;
+      this.syncTickDbSubscriptions();
+    });
+
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data !== "string") return;
+
+      let message: unknown;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      const ticks = normalizeTickDbTicker(message);
+      for (const tick of ticks) this.broadcastTick(tick);
+    });
+
+    const reconnect = () => {
+      this.tickDbSocket = null;
+      this.tickDbReady = false;
+      if (!this.activeTickDbSymbols().length || this.tickDbReconnectTimer !== null) return;
+
+      this.tickDbReconnectTimer = setTimeout(() => {
+        this.tickDbReconnectTimer = null;
+        this.ensureTickDbConnection();
+      }, 1500) as unknown as number;
+    };
+
+    socket.addEventListener("close", reconnect);
+    socket.addEventListener("error", reconnect);
+  }
+
+  private syncTickDbSubscriptions() {
+    const providerSymbols = this.activeTickDbSymbols()
+      .map((symbol) => tickDbSymbol(symbol))
+      .filter((symbol): symbol is string => Boolean(symbol));
+
+    if (!providerSymbols.length) return;
+    this.ensureTickDbConnection();
+
+    if (!this.tickDbSocket || !this.tickDbReady) return;
+
+    this.tickDbSocket.send(JSON.stringify({
+      cmd: "subscribe",
+      data: {
+        channel: "ticker",
+        symbols: providerSymbols,
+      },
+    }));
+  }
+
+  private closeTickDbIfUnused() {
+    if (this.activeTickDbSymbols().length) return;
+
+    if (this.tickDbReconnectTimer !== null) {
+      clearTimeout(this.tickDbReconnectTimer);
+      this.tickDbReconnectTimer = null;
+    }
+
+    this.tickDbReady = false;
+    this.tickDbSocket?.close();
+    this.tickDbSocket = null;
   }
 
   private ensureSymbolTimer(symbol: string) {
@@ -480,6 +708,18 @@ export class MarketStreamRoom extends DurableObject<Env> {
         } catch {
           this.subscriptions.delete(ws);
         }
+      }
+    }
+  }
+
+  private broadcastError(errorMessage: string) {
+    const payload = JSON.stringify({ type: "error", error: errorMessage });
+
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.send(payload);
+      } catch {
+        this.subscriptions.delete(ws);
       }
     }
   }

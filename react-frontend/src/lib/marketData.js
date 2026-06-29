@@ -4,10 +4,10 @@ export const ASSETS = [
   { symbol: "BTCUSD", label: "Bitcoin", source: "Hyperliquid", coin: "BTC", pricePrecision: 1 },
   { symbol: "ETHUSD", label: "Ethereum", source: "Hyperliquid", coin: "ETH", pricePrecision: 2 },
   { symbol: "SOLUSD", label: "Solana", source: "Hyperliquid", coin: "SOL", pricePrecision: 3 },
-  { symbol: "XAUUSD", label: "Gold Futures", source: "Yahoo Poll", pricePrecision: 2 },
+  { symbol: "XAUUSD", label: "Gold Spot", source: "TickDB", pricePrecision: 2, tickDbSymbol: "XAUUSD" },
   { symbol: "USTECH", label: "Nasdaq Futures", source: "Yahoo", pricePrecision: 2 },
   { symbol: "USOIL", label: "Crude Oil", source: "Yahoo", pricePrecision: 2 },
-  { symbol: "EURUSD", label: "Euro / Dollar", source: "Yahoo Poll", pricePrecision: 5 },
+  { symbol: "EURUSD", label: "Euro / Dollar", source: "TickDB", pricePrecision: 5, tickDbSymbol: "EURUSD" },
   { symbol: "EURJPY", label: "Euro / Yen", source: "Yahoo Poll", pricePrecision: 3 },
   { symbol: "USDJPY", label: "Dollar / Yen", source: "Yahoo Poll", pricePrecision: 3 },
   { symbol: "GBPJPY", label: "Pound / Yen", source: "Yahoo Poll", pricePrecision: 3 },
@@ -19,6 +19,10 @@ export const HYPERLIQUID_ASSETS = ASSETS
   .filter((asset) => asset.source === "Hyperliquid")
   .reduce((map, asset) => ({ ...map, [asset.symbol]: asset }), {});
 
+export const TICKDB_ASSETS = ASSETS
+  .filter((asset) => asset.source === "TickDB")
+  .reduce((map, asset) => ({ ...map, [asset.symbol]: asset }), {});
+
 export function getAssetConfig(symbol) {
   return ASSETS.find((asset) => asset.symbol === symbol) || ASSETS[0];
 }
@@ -27,8 +31,17 @@ export function isHyperliquidAsset(symbol) {
   return Boolean(HYPERLIQUID_ASSETS[symbol]);
 }
 
+export function isTickDbAsset(symbol) {
+  return Boolean(TICKDB_ASSETS[symbol]);
+}
+
 export function isPollingAsset(symbol) {
-  return !isHyperliquidAsset(symbol);
+  return !isHyperliquidAsset(symbol) && !isTickDbAsset(symbol);
+}
+
+export function marketLiveWebSocketUrl() {
+  const configuredUrl = import.meta.env.VITE_MARKET_LIVE_WS_URL;
+  return configuredUrl || "";
 }
 
 export function resolutionToSeconds(resolution) {
