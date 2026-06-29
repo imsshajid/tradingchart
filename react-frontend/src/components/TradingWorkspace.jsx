@@ -10,10 +10,12 @@ import {
   Layers,
   LineChart,
   Maximize2,
+  Magnet,
   MousePointer2,
   Pause,
   Play,
   RotateCcw,
+  Ruler,
   Settings,
   SkipBack,
   SkipForward,
@@ -73,6 +75,7 @@ const DRAWING_TOOL_GROUPS = [
     tools: [
       { id: "rectangle", label: "Rectangle", shortLabel: "Rect", icon: Square },
       { id: "arrow", label: "Arrow", shortLabel: "Arrow", icon: ArrowUpRight },
+      { id: "measure", label: "Measure", shortLabel: "Measure", icon: Ruler },
     ],
   },
   {
@@ -80,6 +83,13 @@ const DRAWING_TOOL_GROUPS = [
     tools: [
       { id: "fib-retracement", label: "Fib Retracement", shortLabel: "Fib", icon: Gauge },
       { id: "fib-extension", label: "Fib Extension", shortLabel: "FibX", icon: Gauge },
+    ],
+  },
+  {
+    id: "positions",
+    tools: [
+      { id: "long-position", label: "Long Position", shortLabel: "Long", icon: TrendingUp },
+      { id: "short-position", label: "Short Position", shortLabel: "Short", icon: TrendingDown },
     ],
   },
 ];
@@ -119,8 +129,11 @@ const DRAWING_INSTRUCTIONS = {
   "vertical-line": "Vertical line: click timestamp.",
   rectangle: "Rectangle: click first corner, then opposite corner.",
   arrow: "Arrow: click tail, then head.",
+  measure: "Measure: click start, then click end.",
   "fib-retracement": "Fib retracement: click swing high/low pair.",
   "fib-extension": "Fib extension: click start, end, then projection anchor.",
+  "long-position": "Long position: click entry, target, then stop.",
+  "short-position": "Short position: click entry, target, then stop.",
 };
 
 const WORKSPACE_STORAGE_KEY = "quantum-terminal.workspace.v2";
@@ -155,6 +168,7 @@ const DEFAULT_SETTINGS = {
   },
   drawings: {
     keepDrawingMode: false,
+    magnetMode: false,
     color: "#f8fafc",
     lineWidth: 2,
     fillColor: "#60a5fa",
@@ -610,6 +624,11 @@ function ConfigModal({
                       checked={settings.drawings.keepDrawingMode}
                       onChange={(keepDrawingMode) => updateDrawings({ keepDrawingMode })}
                     />
+                    <CheckboxRow
+                      label="Magnet mode"
+                      checked={settings.drawings.magnetMode}
+                      onChange={(magnetMode) => updateDrawings({ magnetMode })}
+                    />
                     <ColorInput label="Line color" value={settings.drawings.color} onChange={(color) => updateDrawings({ color })} />
                     <FormRow label="Line width">
                       <NumberInput value={settings.drawings.lineWidth} min={1} max={8} onChange={(lineWidth) => updateDrawings({ lineWidth })} />
@@ -715,6 +734,26 @@ function ConfigModal({
                           levels={selectedTool.levels || settings.drawings.fibLevels}
                           fallbackColor={selectedTool.color || settings.drawings.fibColor}
                           onChange={(levels) => onSelectedDrawingChange?.({ levels })}
+                        />
+                      </>
+                    )}
+                    {selectedTool.type === "position" && (
+                      <>
+                        <ColorInput
+                          label="Target"
+                          value={selectedTool.targetColor || settings.drawings.targetColor}
+                          onChange={(targetColor) => onSelectedDrawingChange?.({
+                            targetColor,
+                            targetFill: rgbaFromHex(targetColor, settings.drawings.zoneOpacity),
+                          })}
+                        />
+                        <ColorInput
+                          label="Stop"
+                          value={selectedTool.stopColor || settings.drawings.stopColor}
+                          onChange={(stopColor) => onSelectedDrawingChange?.({
+                            stopColor,
+                            stopFill: rgbaFromHex(stopColor, settings.drawings.zoneOpacity),
+                          })}
                         />
                       </>
                     )}
@@ -902,8 +941,22 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
               )}
               {tool.type === "position" && (
                 <>
-                  <ColorInput label="Target" value={tool.targetColor || settings.drawings.targetColor} onChange={(targetColor) => onChange?.({ targetColor })} />
-                  <ColorInput label="Stop" value={tool.stopColor || settings.drawings.stopColor} onChange={(stopColor) => onChange?.({ stopColor })} />
+                  <ColorInput
+                    label="Target"
+                    value={tool.targetColor || settings.drawings.targetColor}
+                    onChange={(targetColor) => onChange?.({
+                      targetColor,
+                      targetFill: rgbaFromHex(targetColor, settings.drawings.zoneOpacity),
+                    })}
+                  />
+                  <ColorInput
+                    label="Stop"
+                    value={tool.stopColor || settings.drawings.stopColor}
+                    onChange={(stopColor) => onChange?.({
+                      stopColor,
+                      stopFill: rgbaFromHex(stopColor, settings.drawings.zoneOpacity),
+                    })}
+                  />
                 </>
               )}
             </div>
@@ -947,7 +1000,7 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
   );
 }
 
-function DrawingToolbar({ activeTool, onToolChange, onClear }) {
+function DrawingToolbar({ activeTool, magnetMode, onToolChange, onMagnetToggle, onClear }) {
   const [openGroupId, setOpenGroupId] = useState(null);
   const selectTool = (toolId) => {
     onToolChange(toolId);
@@ -956,6 +1009,14 @@ function DrawingToolbar({ activeTool, onToolChange, onClear }) {
 
   return (
     <aside className="relative z-40 flex w-16 shrink-0 flex-col items-center gap-1 overflow-visible border-r border-[#1f1f23] bg-[#09090b] py-3">
+      <IconButton
+        label="Magnet Mode"
+        shortLabel="Mag"
+        icon={Magnet}
+        active={magnetMode}
+        onClick={onMagnetToggle}
+      />
+      <div className="my-1 h-px w-10 bg-[#1f1f23]" />
       {DRAWING_TOOL_GROUPS.map((group) => {
         const activeGroupTool = group.tools.find((tool) => tool.id === activeTool);
         const displayTool = activeGroupTool || group.tools[0];
@@ -967,20 +1028,11 @@ function DrawingToolbar({ activeTool, onToolChange, onClear }) {
           <div
             key={group.id}
             className="relative"
-            onMouseEnter={() => {
-              if (hasFlyout) setOpenGroupId(group.id);
-            }}
-            onMouseLeave={() => {
-              if (openGroupId === group.id) setOpenGroupId(null);
-            }}
           >
             <button
               type="button"
               title={displayTool.label}
               aria-label={displayTool.label}
-              onFocus={() => {
-                if (hasFlyout) setOpenGroupId(group.id);
-              }}
               onClick={() => selectTool(displayTool.id)}
               className={`relative grid h-11 w-12 place-items-center rounded border py-1 text-zinc-400 transition-none ${
                 active
@@ -1237,35 +1289,6 @@ function ChartPane({
     });
   }, [active, change, config.resolution, config.symbol, liveLabel, marketSource, onMarketSnapshot, price, visibleCandles.length, volume]);
 
-  const addQuickPlot = (type) => {
-    const candle = latestCandle || candles[candles.length - 1];
-    if (!candle) return;
-
-    const step = resolutionToSeconds(config.resolution);
-    const endTime = candle.time + step * 30;
-
-    if (type === "line") {
-      chartRef.current?.addTool?.({
-        type: "horizontal-line",
-        color: "#f8fafc",
-        points: [{ time: candle.time, price: candle.close }],
-      });
-      return;
-    }
-
-    const isShort = type === "short";
-    chartRef.current?.addTool?.({
-      type: "position",
-      direction: isShort ? "short" : "long",
-      color: "#f8fafc",
-      points: [
-        { time: candle.time, price: candle.close },
-        { time: endTime, price: candle.close * (isShort ? 0.982 : 1.018) },
-        { time: endTime, price: candle.close * (isShort ? 1.01 : 0.99) },
-      ],
-    });
-  };
-
   return (
     <section
       onPointerDown={onActivate}
@@ -1381,18 +1404,7 @@ function ChartPane({
         )}
       </div>
 
-      <div className="flex min-h-[40px] flex-wrap items-center justify-between gap-2 border-t border-[#1f1f23] bg-[#09090b] px-2 py-1.5">
-        <div className="flex items-center gap-1">
-          <button type="button" onClick={() => addQuickPlot("line")} className="h-7 rounded border border-[#1f1f23] px-2 text-[10px] font-semibold text-zinc-400 hover:text-zinc-100">
-            HLine
-          </button>
-          <button type="button" onClick={() => addQuickPlot("long")} className="flex h-7 items-center gap-1 rounded border border-emerald-500/40 px-2 text-[10px] font-semibold text-emerald-300">
-            <TrendingUp className="h-3 w-3" /> Long
-          </button>
-          <button type="button" onClick={() => addQuickPlot("short")} className="flex h-7 items-center gap-1 rounded border border-rose-500/40 px-2 text-[10px] font-semibold text-rose-300">
-            <TrendingDown className="h-3 w-3" /> Short
-          </button>
-        </div>
+      <div className="flex min-h-[40px] items-center justify-end border-t border-[#1f1f23] bg-[#09090b] px-2 py-1.5">
         <div className="flex items-center gap-3 font-mono text-[10px] text-zinc-500">
           <span>VOL {formatCompactVolume(volume)}</span>
           <span>BARS {visibleCandles.length}</span>
@@ -1758,7 +1770,15 @@ export default function TradingWorkspace() {
       <div className="flex h-screen min-h-0 overflow-hidden bg-[#09090b] text-zinc-100">
         <DrawingToolbar
           activeTool={activeTool}
+          magnetMode={settings.drawings.magnetMode}
           onToolChange={changeActiveTool}
+          onMagnetToggle={() => setSettings((current) => ({
+            ...current,
+            drawings: {
+              ...current.drawings,
+              magnetMode: !current.drawings.magnetMode,
+            },
+          }))}
           onClear={clearAllDrawings}
         />
 

@@ -108,6 +108,7 @@ const DEFAULT_INDICATORS = {
 const DEFAULT_FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618];
 const DEFAULT_DRAWING_SETTINGS = {
   keepDrawingMode: false,
+  magnetMode: false,
   color: "#f8fafc",
   lineWidth: 2,
   fillColor: "#60a5fa",
@@ -138,9 +139,12 @@ const TOOL_TYPES = new Set([
   "vertical-line",
   "rectangle",
   "arrow",
+  "measure",
   "fib-retracement",
   "fib-extension",
   "position",
+  "long-position",
+  "short-position",
 ]);
 
 function getTheme(theme) {
@@ -462,14 +466,27 @@ function withCandleStyles(candles, candleStyles) {
   });
 }
 
+function storedToolType(type) {
+  if (type === "long-position" || type === "short-position") return "position";
+  return type;
+}
+
+function toolDirection(type) {
+  if (type === "long-position") return "long";
+  if (type === "short-position") return "short";
+  return null;
+}
+
 function toolRequiredPoints(type) {
   if (type === "cursor") return 0;
   if (type === "horizontal-line" || type === "horizontal-ray" || type === "vertical-line") return 1;
   if (type === "fib-extension") return 3;
+  if (type === "position" || type === "long-position" || type === "short-position") return 3;
   return 2;
 }
 
 function defaultToolStyle(type, settings = DEFAULT_DRAWING_SETTINGS) {
+  const normalizedType = storedToolType(type);
   const lineWidth = Math.max(1, Math.min(8, Number(settings.lineWidth) || DEFAULT_DRAWING_SETTINGS.lineWidth));
   const baseStyle = {
     color: settings.color || DEFAULT_DRAWING_SETTINGS.color,
@@ -480,7 +497,7 @@ function defaultToolStyle(type, settings = DEFAULT_DRAWING_SETTINGS) {
     lineWidth,
   };
 
-  if (type === "fib-retracement" || type === "fib-extension") {
+  if (normalizedType === "fib-retracement" || normalizedType === "fib-extension") {
     return {
       ...baseStyle,
       color: settings.fibColor || DEFAULT_DRAWING_SETTINGS.fibColor,
@@ -492,7 +509,7 @@ function defaultToolStyle(type, settings = DEFAULT_DRAWING_SETTINGS) {
     };
   }
 
-  if (type === "rectangle") {
+  if (normalizedType === "rectangle") {
     return {
       ...baseStyle,
       color: settings.zoneColor || settings.color || DEFAULT_DRAWING_SETTINGS.zoneColor,
@@ -503,7 +520,7 @@ function defaultToolStyle(type, settings = DEFAULT_DRAWING_SETTINGS) {
     };
   }
 
-  if (type === "position") {
+  if (normalizedType === "position") {
     return {
       ...baseStyle,
       targetColor: settings.targetColor || DEFAULT_DRAWING_SETTINGS.targetColor,
@@ -806,6 +823,31 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     };
   }, [logicalToNearestTime]);
 
+  const applyMagnetToPoint = useCallback((point) => {
+    if (!mergedDrawingSettings.magnetMode || !point) return point;
+
+    const candles = dataRef.current;
+    if (!candles.length || !Number.isFinite(Number(point.logical))) return point;
+
+    const index = Math.max(0, Math.min(candles.length - 1, Math.round(Number(point.logical))));
+    const candle = candles[index];
+    if (!candle) return point;
+
+    const candidates = [candle.open, candle.high, candle.low, candle.close].filter(Number.isFinite);
+    if (!candidates.length) return point;
+
+    const price = candidates.reduce((best, candidate) => (
+      Math.abs(candidate - point.price) < Math.abs(best - point.price) ? candidate : best
+    ), candidates[0]);
+
+    return {
+      ...point,
+      logical: index,
+      time: candle.time,
+      price,
+    };
+  }, [mergedDrawingSettings.magnetMode]);
+
   const selectedTool = useMemo(
     () => tools.find((tool) => tool.id === selectedToolId) || null,
     [selectedToolId, tools],
@@ -931,6 +973,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
     if (tool.type === "arrow" && points[1]) {
       drawArrow(context, points[0], points[1]);
+    }
+
+    if (tool.type === "measure" && points[1]) {
+      drawMeasureTool(context, points[0], points[1], tool);
     }
 
     if (tool.type === "fib-retracement" && points[1]) {
@@ -1170,11 +1216,21 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         return { tool, handleIndex: null, cursor };
       }
 
-      if (tool.type === "rectangle" && points[0] && points[1]) {
+      if ((tool.type === "rectangle" || tool.type === "measure") && points[0] && points[1]) {
         const left = Math.min(points[0].x, points[1].x);
         const right = Math.max(points[0].x, points[1].x);
         const top = Math.min(points[0].y, points[1].y);
         const bottom = Math.max(points[0].y, points[1].y);
+        if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
+          return { tool, handleIndex: null, cursor };
+        }
+      }
+
+      if (tool.type === "position" && points[0] && points[1] && points[2]) {
+        const left = Math.min(points[0].x, points[1].x, points[2].x);
+        const right = Math.max(points[0].x, points[1].x, points[2].x);
+        const top = Math.min(points[0].y, points[1].y, points[2].y);
+        const bottom = Math.max(points[0].y, points[1].y, points[2].y);
         if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
           return { tool, handleIndex: null, cursor };
         }
@@ -1574,8 +1630,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
 
-    const point = canvasPointToDataPoint(event);
-    if (!point) return;
+    const rawPoint = canvasPointToDataPoint(event);
+    if (!rawPoint) return;
 
     if (toolMode === "cursor") return;
 
@@ -1587,7 +1643,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
           type: "drag",
           toolId: hit.tool.id,
           handleIndex: hit.handleIndex,
-          startPoint: point,
+          startPoint: rawPoint,
           startCursor: hit.cursor,
           hasMoved: false,
           originalTool: hit.tool,
@@ -1596,26 +1652,31 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       return;
     }
 
+    const point = applyMagnetToPoint(rawPoint);
     const requiredPoints = toolRequiredPoints(toolMode);
+    const toolType = storedToolType(toolMode);
+    const direction = toolDirection(toolMode);
     if (!draftTool) {
       if (requiredPoints === 1) {
         const newTool = {
-          id: createId(toolMode),
-          type: toolMode,
+          id: createId(toolType),
+          type: toolType,
+          ...(direction ? { direction } : {}),
           points: [point],
           levels: effectiveFibLevels,
-          ...defaultToolStyle(toolMode, mergedDrawingSettings),
+          ...defaultToolStyle(toolType, mergedDrawingSettings),
         };
         completeTool(newTool);
         return;
       }
 
       setDraftTool({
-        id: createId(toolMode),
-        type: toolMode,
+        id: createId(toolType),
+        type: toolType,
+        ...(direction ? { direction } : {}),
         points: [point],
         levels: effectiveFibLevels,
-        ...defaultToolStyle(toolMode, mergedDrawingSettings),
+        ...defaultToolStyle(toolType, mergedDrawingSettings),
       });
       setDraftPoint(point);
       return;
@@ -1632,6 +1693,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       setDraftPoint(point);
     }
   }, [
+    applyMagnetToPoint,
     canvasPointToDataPoint,
     completeTool,
     draftTool,
@@ -1642,11 +1704,11 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   ]);
 
   const handlePointerMove = useCallback((event) => {
-    const point = canvasPointToDataPoint(event);
-    if (!point) return;
+    const rawPoint = canvasPointToDataPoint(event);
+    if (!rawPoint) return;
 
     if (draftTool) {
-      setDraftPoint(point);
+      setDraftPoint(applyMagnetToPoint(rawPoint));
       return;
     }
 
@@ -1672,16 +1734,16 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
       const points = [...interaction.originalTool.points];
       if (interaction.handleIndex !== null) {
-        points[interaction.handleIndex] = point;
+        points[interaction.handleIndex] = applyMagnetToPoint(rawPoint);
       } else {
-        const priceDelta = point.price - interaction.startPoint.price;
+        const priceDelta = rawPoint.price - interaction.startPoint.price;
         const startLogical = pointToLogical(interaction.startPoint);
-        const currentLogical = pointToLogical(point);
+        const currentLogical = pointToLogical(rawPoint);
         const logicalDelta = Number.isFinite(startLogical) && Number.isFinite(currentLogical)
           ? currentLogical - startLogical
           : null;
-        const timeDelta = logicalDelta === null && typeof point.time === "number" && typeof interaction.startPoint.time === "number"
-          ? point.time - interaction.startPoint.time
+        const timeDelta = logicalDelta === null && typeof rawPoint.time === "number" && typeof interaction.startPoint.time === "number"
+          ? rawPoint.time - interaction.startPoint.time
           : null;
 
         points.forEach((toolPoint, index) => {
@@ -1705,7 +1767,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
       return { ...tool, points };
     }));
-  }, [canvasPointToDataPoint, commitTools, draftTool, logicalToNearestTime, pointToLogical]);
+  }, [applyMagnetToPoint, canvasPointToDataPoint, commitTools, draftTool, logicalToNearestTime, pointToLogical]);
 
   const handlePointerUp = useCallback((event) => {
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -1969,6 +2031,51 @@ function drawFibExtension(context, start, end, anchor, levels, tool) {
     context.fillStyle = tool.labelColor || context.strokeStyle;
     context.fillText(level.label || formatFibLevel(value), right + 6, y - 3);
   });
+}
+
+function drawMeasureTool(context, start, end, tool) {
+  const left = Math.min(start.x, end.x);
+  const right = Math.max(start.x, end.x);
+  const top = Math.min(start.y, end.y);
+  const bottom = Math.max(start.y, end.y);
+  const width = Math.max(1, right - left);
+  const height = Math.max(1, bottom - top);
+  const [startData, endData] = tool.points || [];
+  const priceDelta = Number(endData?.price) - Number(startData?.price);
+  const percent = Number.isFinite(priceDelta) && Number(startData?.price)
+    ? (priceDelta / Number(startData.price)) * 100
+    : 0;
+  const startLogical = Number(startData?.logical);
+  const endLogical = Number(endData?.logical);
+  const bars = Number.isFinite(startLogical) && Number.isFinite(endLogical)
+    ? Math.abs(Math.round(endLogical - startLogical))
+    : Math.abs(Math.round((Number(endData?.time) - Number(startData?.time)) / 60)) || 0;
+  const label = `${priceDelta >= 0 ? "+" : ""}${priceDelta.toFixed(2)} (${percent >= 0 ? "+" : ""}${percent.toFixed(2)}%)  ${bars} bars`;
+
+  context.save();
+  context.setLineDash([5, 5]);
+  context.strokeStyle = tool.color || "#f8fafc";
+  context.fillStyle = tool.fill || "rgba(96, 165, 250, 0.12)";
+  context.lineWidth = Math.max(1, Number(tool.lineWidth) || 1);
+  context.fillRect(left, top, width, height);
+  context.strokeRect(left, top, width, height);
+  context.setLineDash([]);
+  context.beginPath();
+  context.moveTo(start.x, start.y);
+  context.lineTo(end.x, end.y);
+  context.stroke();
+
+  context.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  const textWidth = context.measureText(label).width;
+  const labelX = Math.max(4, Math.min(context.canvas.clientWidth - textWidth - 14, (left + right) / 2 - textWidth / 2 - 7));
+  const labelY = Math.max(4, top - 26);
+  context.fillStyle = "rgba(9, 12, 16, 0.92)";
+  context.fillRect(labelX, labelY, textWidth + 14, 20);
+  context.strokeStyle = "rgba(148, 163, 184, 0.45)";
+  context.strokeRect(labelX, labelY, textWidth + 14, 20);
+  context.fillStyle = tool.color || "#f8fafc";
+  context.fillText(label, labelX + 7, labelY + 14);
+  context.restore();
 }
 
 function drawPositionTool(context, entry, target, stop, tool) {
