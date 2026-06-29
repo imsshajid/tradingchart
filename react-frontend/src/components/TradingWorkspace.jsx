@@ -710,6 +710,120 @@ function ColorInput({ label, value, onChange }) {
   );
 }
 
+function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose }) {
+  const [tab, setTab] = useState("style");
+  const tool = selectedDrawing?.tool;
+  if (!open || !tool) return null;
+
+  const updatePoint = (index, patch) => {
+    onChange?.({
+      points: tool.points.map((point, pointIndex) => (
+        pointIndex === index ? { ...point, ...patch } : point
+      )),
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
+      <div className="flex max-h-[86vh] w-full max-w-lg flex-col overflow-hidden rounded-lg border border-[#1f1f23] bg-[#0c0c0e] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[#1f1f23] px-5 py-4">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-100">{tool.type}</h2>
+            <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500">Pane {selectedDrawing.paneId}</p>
+          </div>
+          <button className="rounded border border-[#1f1f23] px-2.5 py-1 text-xs text-zinc-400 hover:text-zinc-100" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="flex border-b border-[#1f1f23] px-4">
+          {[
+            ["style", "Style"],
+            ["coordinates", "Coordinates"],
+            ["visibility", "Visibility"],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={`h-11 px-4 text-xs font-semibold ${tab === key ? "text-emerald-300" : "text-zinc-500 hover:text-zinc-200"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="overflow-auto p-5">
+          {tab === "style" && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <ColorInput label="Line color" value={tool.color || settings.drawings.color} onChange={(color) => onChange?.({ color })} />
+              <FormRow label="Line width">
+                <NumberInput value={tool.lineWidth || settings.drawings.lineWidth} min={1} max={8} onChange={(lineWidth) => onChange?.({ lineWidth })} />
+              </FormRow>
+              {(tool.type === "rectangle" || tool.type === "position") && (
+                <ColorInput
+                  label="Zone color"
+                  value={tool.color || settings.drawings.zoneColor}
+                  onChange={(color) => onChange?.({ color, fill: rgbaFromHex(color, settings.drawings.zoneOpacity) })}
+                />
+              )}
+              {(tool.type === "fib-retracement" || tool.type === "fib-extension") && (
+                <>
+                  <ColorInput label="Label color" value={tool.labelColor || settings.drawings.fibLabelColor} onChange={(labelColor) => onChange?.({ labelColor })} />
+                  <ColorInput
+                    label="Fib fill"
+                    value={tool.fill || settings.drawings.fibFillColor}
+                    onChange={(fillColor) => onChange?.({ fill: rgbaFromHex(fillColor, settings.drawings.fibFillOpacity) })}
+                  />
+                </>
+              )}
+              {tool.type === "position" && (
+                <>
+                  <ColorInput label="Target" value={tool.targetColor || settings.drawings.targetColor} onChange={(targetColor) => onChange?.({ targetColor })} />
+                  <ColorInput label="Stop" value={tool.stopColor || settings.drawings.stopColor} onChange={(stopColor) => onChange?.({ stopColor })} />
+                </>
+              )}
+            </div>
+          )}
+
+          {tab === "coordinates" && (
+            <div className="grid gap-3">
+              {tool.points.map((point, index) => (
+                <section key={`${tool.id}-point-${index}`} className="grid gap-3 rounded border border-[#1f1f23] bg-[#09090b] p-3 sm:grid-cols-2">
+                  <h3 className="col-span-full font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                    Point {index + 1}
+                  </h3>
+                  <FormRow label="Time">
+                    <NumberInput value={typeof point.time === "number" ? point.time : 0} min={0} step={1} onChange={(time) => updatePoint(index, { time })} />
+                  </FormRow>
+                  <FormRow label="Price">
+                    <NumberInput value={Number(point.price || 0)} step={0.01} onChange={(price) => updatePoint(index, { price })} />
+                  </FormRow>
+                </section>
+              ))}
+            </div>
+          )}
+
+          {tab === "visibility" && (
+            <div className="grid gap-4">
+              <CheckboxRow label="Visible" checked={tool.visible !== false} onChange={(visible) => onChange?.({ visible })} />
+              <div className="rounded border border-[#1f1f23] bg-[#09090b] p-3 text-xs leading-5 text-zinc-500">
+                Visibility is saved with the drawing object and restored after refresh.
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-[#1f1f23] px-5 py-4">
+          <button type="button" onClick={onClose} className="h-9 rounded border border-[#1f1f23] px-4 text-xs font-semibold text-zinc-300 hover:text-white">
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DrawingToolbar({ activeTool, onToolChange, onClear }) {
   return (
     <aside className="flex w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[#1f1f23] bg-[#09090b] py-3">
@@ -742,6 +856,7 @@ function ChartPane({
   onToolChange,
   onToolsChange,
   onSelectedToolChange,
+  onToolSettingsRequest,
   onConfigChange,
   onCandlesChange,
   onMarketSnapshot,
@@ -1032,6 +1147,7 @@ function ChartPane({
           onSelectedToolChange={(tool) => {
             if (active || tool) onSelectedToolChange(config.id, tool);
           }}
+          onToolSettingsRequest={(tool) => onToolSettingsRequest?.(config.id, tool)}
           onVisibleLogicalRangeChange={handleVisibleRangeChange}
           showToolBadge={!compact}
           fitContentToken={fitToken}
@@ -1244,6 +1360,7 @@ export default function TradingWorkspace() {
   const [activeTool, setActiveTool] = useState(() => persisted.activeTool || "cursor");
   const [clearToolsSignal, setClearToolsSignal] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
+  const [objectModalOpen, setObjectModalOpen] = useState(false);
   const [snapshot, setSnapshot] = useState({});
   const [paneCandles, setPaneCandles] = useState({});
   const [drawingsByPaneId, setDrawingsByPaneId] = useState(() => sanitizeDrawingsByPane(persisted.drawingsByPaneId));
@@ -1301,6 +1418,11 @@ export default function TradingWorkspace() {
 
   const handleSelectedToolChange = useCallback((paneId, tool) => {
     setSelectedDrawing(tool ? { paneId, tool } : null);
+  }, []);
+
+  const openToolSettings = useCallback((paneId, tool) => {
+    setSelectedDrawing({ paneId, tool });
+    setObjectModalOpen(true);
   }, []);
 
   const updateSelectedDrawing = useCallback((patch) => {
@@ -1500,6 +1622,7 @@ export default function TradingWorkspace() {
                 onToolChange={setActiveTool}
                 onToolsChange={handleToolsChange}
                 onSelectedToolChange={handleSelectedToolChange}
+                onToolSettingsRequest={openToolSettings}
                 onConfigChange={updatePaneConfig}
                 onCandlesChange={handleCandlesChange}
                 onMarketSnapshot={setSnapshot}
@@ -1532,6 +1655,13 @@ export default function TradingWorkspace() {
           onChange={setSettings}
           selectedDrawing={selectedDrawing}
           onSelectedDrawingChange={updateSelectedDrawing}
+        />
+        <DrawingObjectModal
+          open={objectModalOpen}
+          selectedDrawing={selectedDrawing}
+          settings={settings}
+          onChange={updateSelectedDrawing}
+          onClose={() => setObjectModalOpen(false)}
         />
       </div>
     </div>

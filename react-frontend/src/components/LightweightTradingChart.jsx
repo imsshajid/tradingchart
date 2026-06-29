@@ -8,6 +8,12 @@ import React, {
   useState,
 } from "react";
 import {
+  Copy,
+  Palette,
+  Settings,
+  Trash2,
+} from "lucide-react";
+import {
   CandlestickSeries,
   ColorType,
   createChart,
@@ -187,6 +193,13 @@ function colorToRgb(color, fallback = "#ffffff") {
   }
 
   return colorToRgb(fallback, "#ffffff");
+}
+
+function colorToHex(color, fallback = "#ffffff") {
+  const { r, g, b } = colorToRgb(color, fallback);
+  return `#${[r, g, b].map((value) => (
+    Math.round(value).toString(16).padStart(2, "0")
+  )).join("")}`;
 }
 
 function rgbaFromHex(hex, alpha) {
@@ -526,6 +539,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     onToolChange,
     onToolComplete,
     onSelectedToolChange,
+    onToolSettingsRequest,
     onVisibleLogicalRangeChange,
     showToolBadge = true,
     fitContentToken,
@@ -558,11 +572,13 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const onToolsChangeRef = useRef(onToolsChange);
   const onVisibleLogicalRangeChangeRef = useRef(onVisibleLogicalRangeChange);
   const onSelectedToolChangeRef = useRef(onSelectedToolChange);
+  const onToolSettingsRequestRef = useRef(onToolSettingsRequest);
   const lastEmittedToolsRef = useRef(null);
   const redrawOverlayRef = useRef(() => {});
   const [toolMode, setToolMode] = useState(TOOL_TYPES.has(activeTool) ? activeTool : "cursor");
   const [tools, setTools] = useState(() => (Array.isArray(initialTools) ? initialTools : []));
   const [selectedToolId, setSelectedToolId] = useState(null);
+  const [selectedToolbarPosition, setSelectedToolbarPosition] = useState(null);
   const [draftTool, setDraftTool] = useState(null);
   const [draftPoint, setDraftPoint] = useState(null);
   const [barStyles, setBarStyles] = useState({});
@@ -748,6 +764,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }, []);
 
   const drawTool = useCallback((context, tool, selected = false) => {
+    if (tool.visible === false) return;
+
     const points = tool.points.map(dataPointToCanvasPoint).filter(Boolean);
     const firstPriceY = priceToCanvasY(tool.points[0]?.price);
     if (!points.length && firstPriceY === null) return;
@@ -898,7 +916,17 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       };
       drawTool(context, preview, true);
     }
-  }, [draftPoint, draftTool, drawFairValueGap, drawTool, fvgData, selectedToolId, tools]);
+    updateSelectedToolbarPosition();
+  }, [
+    draftPoint,
+    draftTool,
+    drawFairValueGap,
+    drawTool,
+    fvgData,
+    selectedToolId,
+    tools,
+    updateSelectedToolbarPosition,
+  ]);
 
   useEffect(() => {
     redrawOverlayRef.current = redrawOverlay;
@@ -916,6 +944,116 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     onSelectedToolChangeRef.current = onSelectedToolChange;
   }, [onSelectedToolChange]);
 
+  useEffect(() => {
+    onToolSettingsRequestRef.current = onToolSettingsRequest;
+  }, [onToolSettingsRequest]);
+
+  const selectedTool = useMemo(
+    () => tools.find((tool) => tool.id === selectedToolId) || null,
+    [selectedToolId, tools],
+  );
+
+  const getToolBounds = useCallback((tool) => {
+    const overlay = overlayRef.current;
+    if (!overlay || !tool?.points?.length) return null;
+
+    const width = overlay.clientWidth;
+    const height = overlay.clientHeight;
+    const points = tool.points.map(dataPointToCanvasPoint).filter(Boolean);
+    const firstPriceY = priceToCanvasY(tool.points[0]?.price);
+
+    if (tool.type === "horizontal-line" && firstPriceY !== null) {
+      return { left: 0, right: width, top: firstPriceY, bottom: firstPriceY };
+    }
+
+    if (tool.type === "vertical-line" && points[0]) {
+      return { left: points[0].x, right: points[0].x, top: 0, bottom: height };
+    }
+
+    if (!points.length) return null;
+
+    return {
+      left: Math.min(...points.map((point) => point.x)),
+      right: Math.max(...points.map((point) => point.x)),
+      top: Math.min(...points.map((point) => point.y)),
+      bottom: Math.max(...points.map((point) => point.y)),
+    };
+  }, [dataPointToCanvasPoint, priceToCanvasY]);
+
+  const updateSelectedToolbarPosition = useCallback(() => {
+    const overlay = overlayRef.current;
+    if (!overlay || !selectedTool) {
+      setSelectedToolbarPosition(null);
+      return;
+    }
+
+    const bounds = getToolBounds(selectedTool);
+    if (!bounds) {
+      setSelectedToolbarPosition(null);
+      return;
+    }
+
+    const toolbarWidth = 294;
+    const x = Math.max(10, Math.min(
+      overlay.clientWidth - toolbarWidth - 10,
+      (bounds.left + bounds.right) / 2 - toolbarWidth / 2,
+    ));
+    const y = Math.max(10, Math.min(
+      overlay.clientHeight - 50,
+      bounds.top - 52,
+    ));
+    const next = { x: Math.round(x), y: Math.round(y) };
+
+    setSelectedToolbarPosition((current) => (
+      current?.x === next.x && current?.y === next.y ? current : next
+    ));
+  }, [getToolBounds, selectedTool]);
+
+  const patchSelectedTool = useCallback((patch) => {
+    if (!selectedToolId) return;
+    commitTools((current) => current.map((tool) => (
+      tool.id === selectedToolId ? { ...tool, ...patch } : tool
+    )));
+  }, [commitTools, selectedToolId]);
+
+  const deleteSelectedToolById = useCallback(() => {
+    if (!selectedToolId) return;
+    commitTools((current) => current.filter((tool) => tool.id !== selectedToolId));
+    setSelectedToolId(null);
+  }, [commitTools, selectedToolId]);
+
+  const duplicateSelectedTool = useCallback(() => {
+    if (!selectedTool) return;
+
+    const duplicate = {
+      ...selectedTool,
+      id: createId(selectedTool.type || "tool"),
+      points: selectedTool.points.map((point) => ({
+        ...point,
+        price: point.price * 1.002,
+      })),
+    };
+    commitTools((current) => [...current, duplicate]);
+    setSelectedToolId(duplicate.id);
+  }, [commitTools, selectedTool]);
+
+  const requestSelectedToolSettings = useCallback(() => {
+    if (!selectedTool) return;
+    onToolSettingsRequestRef.current?.(selectedTool);
+  }, [selectedTool]);
+
+  const beginToolInteraction = useCallback((event, hit, point) => {
+    setSelectedToolId(hit.tool.id);
+    interactionRef.current = {
+      type: "drag",
+      toolId: hit.tool.id,
+      handleIndex: hit.handleIndex,
+      startPoint: point,
+      originalTool: hit.tool,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, []);
+
   const hitTestTool = useCallback((event) => {
     const overlay = overlayRef.current;
     if (!overlay) return null;
@@ -925,6 +1063,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
     for (let toolIndex = tools.length - 1; toolIndex >= 0; toolIndex -= 1) {
       const tool = tools[toolIndex];
+      if (tool.visible === false) continue;
+
       const points = tool.points.map(dataPointToCanvasPoint).filter(Boolean);
       const firstPriceY = priceToCanvasY(tool.points[0]?.price);
 
@@ -1461,6 +1601,55 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     interactionRef.current = null;
   }, []);
 
+  const handleRootPointerDownCapture = useCallback((event) => {
+    if (event.target.closest?.("[data-drawing-toolbar='true']")) return;
+    if (event.button !== 0 || draftTool) return;
+    if (toolMode !== "cursor" && toolMode !== "select") return;
+
+    const hit = hitTestTool(event);
+    const point = canvasPointToDataPoint(event);
+
+    if (hit && point) {
+      event.preventDefault();
+      event.stopPropagation();
+      beginToolInteraction(event, hit, point);
+      return;
+    }
+
+    if (toolMode === "select") {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    setSelectedToolId(null);
+  }, [beginToolInteraction, canvasPointToDataPoint, draftTool, hitTestTool, toolMode]);
+
+  const handleRootDoubleClickCapture = useCallback((event) => {
+    if (event.target.closest?.("[data-drawing-toolbar='true']")) return;
+    if (toolMode !== "cursor" && toolMode !== "select") return;
+
+    const hit = hitTestTool(event);
+    if (!hit) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedToolId(hit.tool.id);
+    onToolSettingsRequestRef.current?.(hit.tool);
+  }, [hitTestTool, toolMode]);
+
+  const handleRootPointerMove = useCallback((event) => {
+    if (toolMode !== "cursor" && toolMode !== "select") return;
+    if (!interactionRef.current) return;
+    event.preventDefault();
+    handlePointerMove(event);
+  }, [handlePointerMove, toolMode]);
+
+  const handleRootPointerUp = useCallback((event) => {
+    if (toolMode !== "cursor" && toolMode !== "select") return;
+    if (!interactionRef.current) return;
+    handlePointerUp(event);
+  }, [handlePointerUp, toolMode]);
+
   return (
     <div
       ref={rootRef}
@@ -1469,6 +1658,11 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         borderColor: getTheme(theme).grid,
         background: getTheme(theme).gradient,
       }}
+      onPointerDownCapture={handleRootPointerDownCapture}
+      onDoubleClickCapture={handleRootDoubleClickCapture}
+      onPointerMove={handleRootPointerMove}
+      onPointerUp={handleRootPointerUp}
+      onPointerLeave={handleRootPointerUp}
     >
       <div ref={chartHostRef} className="absolute inset-0 z-0" />
       <canvas
@@ -1484,6 +1678,76 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerUp}
       />
+      {selectedTool && selectedToolbarPosition && (
+        <div
+          data-drawing-toolbar="true"
+          className="absolute z-30 flex h-10 items-center gap-1 rounded-md border px-1.5 shadow-xl backdrop-blur"
+          style={{
+            left: `${selectedToolbarPosition.x}px`,
+            top: `${selectedToolbarPosition.y}px`,
+            borderColor: getTheme(theme).grid,
+            background: theme === "dark" ? "rgba(9, 12, 16, 0.94)" : "rgba(255, 255, 255, 0.94)",
+            color: getTheme(theme).text,
+          }}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation();
+          }}
+        >
+          <label className="grid h-8 w-8 cursor-pointer place-items-center rounded border border-transparent text-zinc-300 hover:border-[#2f363d] hover:bg-white/5" title="Line color">
+            <Palette className="h-4 w-4" aria-hidden="true" />
+            <input
+              type="color"
+              value={colorToHex(selectedTool.color || mergedDrawingSettings.color)}
+              onChange={(event) => patchSelectedTool({ color: event.target.value })}
+              className="sr-only"
+              aria-label="Selected drawing line color"
+            />
+          </label>
+
+          <select
+            value={String(selectedTool.lineWidth || mergedDrawingSettings.lineWidth || 2)}
+            onChange={(event) => patchSelectedTool({ lineWidth: Number(event.target.value) })}
+            className="h-8 rounded border border-[#2f363d] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
+            aria-label="Selected drawing line width"
+            title="Line width"
+          >
+            {[1, 2, 3, 4, 5, 6, 8].map((width) => (
+              <option key={width} value={width}>{width}px</option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            onClick={duplicateSelectedTool}
+            className="grid h-8 w-8 place-items-center rounded border border-transparent text-zinc-300 hover:border-[#2f363d] hover:bg-white/5"
+            aria-label="Duplicate drawing"
+            title="Duplicate"
+          >
+            <Copy className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={requestSelectedToolSettings}
+            className="grid h-8 w-8 place-items-center rounded border border-transparent text-zinc-300 hover:border-[#2f363d] hover:bg-white/5"
+            aria-label="Drawing settings"
+            title="Settings"
+          >
+            <Settings className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={deleteSelectedToolById}
+            className="grid h-8 w-8 place-items-center rounded border border-transparent text-zinc-300 hover:border-[#2f363d] hover:bg-white/5 hover:text-rose-300"
+            aria-label="Delete drawing"
+            title="Delete"
+          >
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
       {showToolBadge && (
         <div className="pointer-events-none absolute left-3 top-3 rounded-md border px-2 py-1 text-xs font-medium shadow-sm backdrop-blur"
           style={{
