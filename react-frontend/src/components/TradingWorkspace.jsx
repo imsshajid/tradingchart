@@ -95,6 +95,136 @@ const DRAWING_INSTRUCTIONS = {
   "fib-extension": "Fib extension: click start, end, then projection anchor.",
 };
 
+const WORKSPACE_STORAGE_KEY = "quantum-terminal.workspace.v2";
+const EMPTY_DRAWINGS = [];
+const DEFAULT_FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618].map((value) => ({
+  value,
+  visible: true,
+  color: "#38bdf8",
+  label: "",
+}));
+
+const DEFAULT_SETTINGS = {
+  sessionBreaks: false,
+  timezone: "Asia/Dhaka",
+  bullColor: "#10b981",
+  bearColor: "#f43f5e",
+  wickColor: "#94a3b8",
+  chart: {
+    gridVisible: true,
+    verticalGridVisible: true,
+    horizontalGridVisible: true,
+    crosshairVisible: true,
+    barSpacing: 6,
+    rightOffset: 8,
+  },
+  volume: {
+    visible: true,
+    heightRatio: 0.22,
+    opacity: 0.38,
+    upColor: "#10b981",
+    downColor: "#f43f5e",
+  },
+  drawings: {
+    keepDrawingMode: false,
+    color: "#f8fafc",
+    lineWidth: 2,
+    fillColor: "#60a5fa",
+    fillOpacity: 0.14,
+    zoneColor: "#60a5fa",
+    zoneOpacity: 0.16,
+    fibColor: "#38bdf8",
+    fibLabelColor: "#bae6fd",
+    fibFillColor: "#38bdf8",
+    fibFillOpacity: 0.08,
+    targetColor: "#10b981",
+    stopColor: "#f43f5e",
+    fibLevels: DEFAULT_FIB_LEVELS,
+  },
+  indicators: {
+    sma: { enabled: false, length: 50, source: "close", color: "#f8fafc" },
+    ema: { enabled: true, length: 21, source: "close", color: "#10b981" },
+    rsi: { enabled: false, period: 14, source: "close", overbought: 70, oversold: 30, color: "#38bdf8" },
+    stochastic: { enabled: false, kPeriod: 14, dPeriod: 3, slowing: 3, kColor: "#a78bfa", dColor: "#f472b6" },
+    fvg: {
+      enabled: true,
+      minGapPercent: 0,
+      extendBars: 18,
+      bullColor: "#10b981",
+      bearColor: "#f43f5e",
+      opacity: 0.16,
+    },
+  },
+};
+
+function mergeSettings(saved = {}) {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...saved,
+    chart: { ...DEFAULT_SETTINGS.chart, ...saved.chart },
+    volume: { ...DEFAULT_SETTINGS.volume, ...saved.volume },
+    drawings: {
+      ...DEFAULT_SETTINGS.drawings,
+      ...saved.drawings,
+      fibLevels: Array.isArray(saved.drawings?.fibLevels) && saved.drawings.fibLevels.length
+        ? saved.drawings.fibLevels
+        : DEFAULT_SETTINGS.drawings.fibLevels,
+    },
+    indicators: {
+      sma: { ...DEFAULT_SETTINGS.indicators.sma, ...saved.indicators?.sma },
+      ema: { ...DEFAULT_SETTINGS.indicators.ema, ...saved.indicators?.ema },
+      rsi: { ...DEFAULT_SETTINGS.indicators.rsi, ...saved.indicators?.rsi },
+      stochastic: { ...DEFAULT_SETTINGS.indicators.stochastic, ...saved.indicators?.stochastic },
+      fvg: { ...DEFAULT_SETTINGS.indicators.fvg, ...saved.indicators?.fvg },
+    },
+  };
+}
+
+function loadWorkspaceState() {
+  if (typeof window === "undefined") return {};
+
+  try {
+    return JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeDrawingsByPane(value) {
+  if (!value || typeof value !== "object") return {};
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, drawings]) => Array.isArray(drawings))
+      .map(([paneId, drawings]) => [paneId, drawings]),
+  );
+}
+
+function colorInputValue(value, fallback = "#ffffff") {
+  const color = String(value || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(color)) return color;
+  if (/^#[0-9a-f]{3}$/i.test(color)) {
+    return `#${color.slice(1).split("").map((char) => char + char).join("")}`;
+  }
+
+  const rgb = color.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+  if (!rgb) return fallback;
+
+  return `#${[rgb[1], rgb[2], rgb[3]].map((part) => (
+    Math.max(0, Math.min(255, Math.round(Number(part) || 0))).toString(16).padStart(2, "0")
+  )).join("")}`;
+}
+
+function rgbaFromHex(hex, alpha) {
+  const clean = colorInputValue(hex).slice(1);
+  const r = Number.parseInt(clean.slice(0, 2), 16);
+  const g = Number.parseInt(clean.slice(2, 4), 16);
+  const b = Number.parseInt(clean.slice(4, 6), 16);
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+
+  return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+}
+
 function formatRemaining(totalSeconds) {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
   const minutes = Math.floor(safeSeconds / 60);
@@ -247,19 +377,48 @@ function NumberInput({ value, onChange, min, max, step = 1 }) {
   );
 }
 
-function ConfigModal({ open, onClose, settings, onChange }) {
+function ConfigModal({
+  open,
+  onClose,
+  settings,
+  onChange,
+  selectedDrawing,
+  onSelectedDrawingChange,
+}) {
   const [tab, setTab] = useState("chart");
   if (!open) return null;
 
   const update = (patch) => onChange({ ...settings, ...patch });
   const updateChart = (patch) => update({ chart: { ...settings.chart, ...patch } });
   const updateVolume = (patch) => update({ volume: { ...settings.volume, ...patch } });
+  const updateDrawings = (patch) => update({ drawings: { ...settings.drawings, ...patch } });
   const updateIndicator = (name, patch) => update({
     indicators: {
       ...settings.indicators,
       [name]: { ...settings.indicators[name], ...patch },
     },
   });
+  const updateFibLevel = (index, patch) => {
+    updateDrawings({
+      fibLevels: settings.drawings.fibLevels.map((level, levelIndex) => (
+        levelIndex === index ? { ...level, ...patch } : level
+      )),
+    });
+  };
+  const removeFibLevel = (index) => {
+    updateDrawings({
+      fibLevels: settings.drawings.fibLevels.filter((_, levelIndex) => levelIndex !== index),
+    });
+  };
+  const addFibLevel = () => {
+    updateDrawings({
+      fibLevels: [
+        ...settings.drawings.fibLevels,
+        { value: 0.705, visible: true, color: settings.drawings.fibColor, label: "" },
+      ].sort((a, b) => Number(a.value) - Number(b.value)),
+    });
+  };
+  const selectedTool = selectedDrawing?.tool || null;
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
@@ -278,6 +437,7 @@ function ConfigModal({ open, onClose, settings, onChange }) {
           {[
             ["chart", "Chart"],
             ["volume", "Volume"],
+            ["drawings", "Drawings"],
             ["indicators", "Indicators"],
             ["time", "Time"],
           ].map(([key, label]) => (
@@ -326,6 +486,130 @@ function ConfigModal({ open, onClose, settings, onChange }) {
             </div>
           )}
 
+          {tab === "drawings" && (
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.9fr)]">
+              <div className="grid gap-5">
+                <section className="grid gap-3 rounded border border-[#1f1f23] bg-[#09090b] p-3">
+                  <h3 className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-zinc-300">Defaults</h3>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <CheckboxRow
+                      label="Keep drawing"
+                      checked={settings.drawings.keepDrawingMode}
+                      onChange={(keepDrawingMode) => updateDrawings({ keepDrawingMode })}
+                    />
+                    <ColorInput label="Line color" value={settings.drawings.color} onChange={(color) => updateDrawings({ color })} />
+                    <FormRow label="Line width">
+                      <NumberInput value={settings.drawings.lineWidth} min={1} max={8} onChange={(lineWidth) => updateDrawings({ lineWidth })} />
+                    </FormRow>
+                    <ColorInput label="Fill color" value={settings.drawings.fillColor} onChange={(fillColor) => updateDrawings({ fillColor })} />
+                    <FormRow label={`Fill opacity ${(settings.drawings.fillOpacity * 100).toFixed(0)}%`}>
+                      <input type="range" min="0" max="0.8" step="0.02" value={settings.drawings.fillOpacity} onChange={(event) => updateDrawings({ fillOpacity: Number(event.target.value) })} className="accent-emerald-500" />
+                    </FormRow>
+                    <ColorInput label="Zone color" value={settings.drawings.zoneColor} onChange={(zoneColor) => updateDrawings({ zoneColor })} />
+                    <FormRow label={`Zone opacity ${(settings.drawings.zoneOpacity * 100).toFixed(0)}%`}>
+                      <input type="range" min="0" max="0.8" step="0.02" value={settings.drawings.zoneOpacity} onChange={(event) => updateDrawings({ zoneOpacity: Number(event.target.value) })} className="accent-emerald-500" />
+                    </FormRow>
+                    <ColorInput label="Target" value={settings.drawings.targetColor} onChange={(targetColor) => updateDrawings({ targetColor })} />
+                    <ColorInput label="Stop" value={settings.drawings.stopColor} onChange={(stopColor) => updateDrawings({ stopColor })} />
+                  </div>
+                </section>
+
+                <section className="grid gap-3 rounded border border-[#1f1f23] bg-[#09090b] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-zinc-300">Fibonacci</h3>
+                    <button type="button" onClick={addFibLevel} className="h-8 rounded border border-[#1f1f23] px-3 text-xs font-semibold text-zinc-300 hover:text-white">
+                      Add Level
+                    </button>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <ColorInput label="Fib line" value={settings.drawings.fibColor} onChange={(fibColor) => updateDrawings({ fibColor })} />
+                    <ColorInput label="Fib labels" value={settings.drawings.fibLabelColor} onChange={(fibLabelColor) => updateDrawings({ fibLabelColor })} />
+                    <ColorInput label="Fib fill" value={settings.drawings.fibFillColor} onChange={(fibFillColor) => updateDrawings({ fibFillColor })} />
+                    <FormRow label={`Fib fill ${(settings.drawings.fibFillOpacity * 100).toFixed(0)}%`}>
+                      <input type="range" min="0" max="0.6" step="0.02" value={settings.drawings.fibFillOpacity} onChange={(event) => updateDrawings({ fibFillOpacity: Number(event.target.value) })} className="accent-emerald-500" />
+                    </FormRow>
+                  </div>
+                  <div className="grid gap-2">
+                    {settings.drawings.fibLevels.map((level, index) => (
+                      <div key={`${level.value}-${index}`} className="grid gap-2 rounded border border-[#1f1f23] bg-[#0c0c0e] p-2 sm:grid-cols-[auto_minmax(5rem,0.6fr)_minmax(6rem,1fr)_auto_auto] sm:items-center">
+                        <input
+                          type="checkbox"
+                          checked={level.visible !== false}
+                          onChange={(event) => updateFibLevel(index, { visible: event.target.checked })}
+                          className="h-4 w-4 accent-emerald-500"
+                          aria-label="Toggle fib level"
+                        />
+                        <NumberInput value={level.value} min={-5} max={5} step={0.001} onChange={(value) => updateFibLevel(index, { value })} />
+                        <input
+                          value={level.label || ""}
+                          onChange={(event) => updateFibLevel(index, { label: event.target.value })}
+                          placeholder={`${Number(level.value * 100).toFixed(1)}%`}
+                          className="h-9 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
+                        />
+                        <input
+                          type="color"
+                          value={colorInputValue(level.color || settings.drawings.fibColor)}
+                          onChange={(event) => updateFibLevel(index, { color: event.target.value })}
+                          className="h-7 w-10 rounded border border-[#1f1f23] bg-transparent"
+                          aria-label="Fib level color"
+                        />
+                        <button type="button" onClick={() => removeFibLevel(index)} className="h-8 rounded border border-[#1f1f23] px-2 text-xs text-zinc-500 hover:text-rose-300">
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <section className="grid content-start gap-3 rounded border border-[#1f1f23] bg-[#09090b] p-3">
+                <h3 className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-zinc-300">Selected Drawing</h3>
+                {selectedTool ? (
+                  <div className="grid gap-3">
+                    <div className="rounded border border-[#1f1f23] bg-[#0c0c0e] px-3 py-2 font-mono text-xs text-zinc-300">
+                      Pane {selectedDrawing.paneId} / {selectedTool.type}
+                    </div>
+                    <ColorInput label="Line color" value={selectedTool.color || settings.drawings.color} onChange={(color) => onSelectedDrawingChange?.({ color })} />
+                    <FormRow label="Line width">
+                      <NumberInput
+                        value={selectedTool.lineWidth || settings.drawings.lineWidth}
+                        min={1}
+                        max={8}
+                        onChange={(lineWidth) => onSelectedDrawingChange?.({ lineWidth })}
+                      />
+                    </FormRow>
+                    {(selectedTool.type === "rectangle" || selectedTool.type === "position") && (
+                      <ColorInput
+                        label="Zone color"
+                        value={selectedTool.color || settings.drawings.zoneColor}
+                        onChange={(color) => onSelectedDrawingChange?.({
+                          color,
+                          fill: rgbaFromHex(color, settings.drawings.zoneOpacity),
+                        })}
+                      />
+                    )}
+                    {(selectedTool.type === "fib-retracement" || selectedTool.type === "fib-extension") && (
+                      <>
+                        <ColorInput label="Label color" value={selectedTool.labelColor || settings.drawings.fibLabelColor} onChange={(labelColor) => onSelectedDrawingChange?.({ labelColor })} />
+                        <ColorInput
+                          label="Fib fill"
+                          value={selectedTool.fill || settings.drawings.fibFillColor}
+                          onChange={(fillColor) => onSelectedDrawingChange?.({
+                            fill: rgbaFromHex(fillColor, settings.drawings.fibFillOpacity),
+                          })}
+                        />
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded border border-[#1f1f23] bg-[#0c0c0e] p-3 text-xs leading-5 text-zinc-500">
+                    Use the edit tool, select a drawing, then adjust its properties here.
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
+
           {tab === "indicators" && (
             <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-5">
               <IndicatorCard title="SMA">
@@ -371,6 +655,11 @@ function ConfigModal({ open, onClose, settings, onChange }) {
                 <CheckboxRow label="Enabled" checked={settings.indicators.fvg.enabled} onChange={(enabled) => updateIndicator("fvg", { enabled })} />
                 <FormRow label="Min gap %"><NumberInput value={settings.indicators.fvg.minGapPercent} min={0} max={10} step={0.05} onChange={(minGapPercent) => updateIndicator("fvg", { minGapPercent })} /></FormRow>
                 <FormRow label="Extend bars"><NumberInput value={settings.indicators.fvg.extendBars} min={1} max={200} onChange={(extendBars) => updateIndicator("fvg", { extendBars })} /></FormRow>
+                <ColorInput label="Bull zone" value={settings.indicators.fvg.bullColor} onChange={(bullColor) => updateIndicator("fvg", { bullColor })} />
+                <ColorInput label="Bear zone" value={settings.indicators.fvg.bearColor} onChange={(bearColor) => updateIndicator("fvg", { bearColor })} />
+                <FormRow label={`Opacity ${(settings.indicators.fvg.opacity * 100).toFixed(0)}%`}>
+                  <input type="range" min="0.04" max="0.5" step="0.02" value={settings.indicators.fvg.opacity} onChange={(event) => updateIndicator("fvg", { opacity: Number(event.target.value) })} className="accent-emerald-500" />
+                </FormRow>
                 <div className="rounded border border-[#1f1f23] bg-[#0c0c0e] p-2 text-[11px] leading-4 text-zinc-500">
                   Bullish and bearish gaps are drawn as non-interactive chart zones behind your drawings.
                 </div>
@@ -413,7 +702,7 @@ function ColorInput({ label, value, onChange }) {
       <span className="text-xs text-zinc-400">{label}</span>
       <input
         type="color"
-        value={value}
+        value={colorInputValue(value)}
         onChange={(event) => onChange(event.target.value)}
         className="h-6 w-10 rounded border border-[#1f1f23] bg-transparent"
       />
@@ -445,10 +734,14 @@ function ChartPane({
   paneCount,
   active,
   settings,
+  paneDrawings,
   activeTool,
   clearToolsSignal,
   replay,
   onActivate,
+  onToolChange,
+  onToolsChange,
+  onSelectedToolChange,
   onConfigChange,
   onCandlesChange,
   onMarketSnapshot,
@@ -464,6 +757,14 @@ function ChartPane({
 
   const compact = paneCount >= 4;
   const refit = useCallback(() => setFitToken((value) => value + 1), []);
+  const handleVisibleRangeChange = useCallback((range) => {
+    if (!autoFollow || !range || !Number.isFinite(range.to)) return;
+
+    const lastIndex = visibleCandlesForReplay(candles, replay).length - 1;
+    if (lastIndex > 0 && range.to < lastIndex - 1.5) {
+      setAutoFollow(false);
+    }
+  }, [autoFollow, candles, replay]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -719,10 +1020,19 @@ function ChartPane({
             wickColor: settings.wickColor,
           }}
           indicatorSettings={settings.indicators}
+          fibLevels={settings.drawings.fibLevels}
+          drawingSettings={settings.drawings}
+          initialTools={paneDrawings}
           chartSettings={settings.chart}
           volumeSettings={settings.volume}
           timezone={settings.timezone}
           onChartTimeClick={(time) => onReplayPick(config.id, time)}
+          onToolChange={onToolChange}
+          onToolsChange={(tools) => onToolsChange(config.id, tools)}
+          onSelectedToolChange={(tool) => {
+            if (active || tool) onSelectedToolChange(config.id, tool);
+          }}
+          onVisibleLogicalRangeChange={handleVisibleRangeChange}
           showToolBadge={!compact}
           fitContentToken={fitToken}
           followLive={autoFollow && !replay.enabled}
@@ -917,15 +1227,27 @@ function TapeRow({ label, value }) {
 }
 
 export default function TradingWorkspace() {
-  const [paneCount, setPaneCount] = useState(2);
-  const [splitMode, setSplitMode] = useState("vertical");
-  const [panes, setPanes] = useState(INITIAL_PANES);
-  const [activePaneId, setActivePaneId] = useState(1);
-  const [activeTool, setActiveTool] = useState("cursor");
+  const persistedRef = useRef(null);
+  if (persistedRef.current === null) {
+    persistedRef.current = loadWorkspaceState();
+  }
+
+  const persisted = persistedRef.current;
+  const [paneCount, setPaneCount] = useState(() => persisted.paneCount || 2);
+  const [splitMode, setSplitMode] = useState(() => persisted.splitMode || "vertical");
+  const [panes, setPanes] = useState(() => (
+    Array.isArray(persisted.panes) && persisted.panes.length
+      ? INITIAL_PANES.map((pane, index) => ({ ...pane, ...persisted.panes[index] }))
+      : INITIAL_PANES
+  ));
+  const [activePaneId, setActivePaneId] = useState(() => persisted.activePaneId || 1);
+  const [activeTool, setActiveTool] = useState(() => persisted.activeTool || "cursor");
   const [clearToolsSignal, setClearToolsSignal] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [snapshot, setSnapshot] = useState({});
   const [paneCandles, setPaneCandles] = useState({});
+  const [drawingsByPaneId, setDrawingsByPaneId] = useState(() => sanitizeDrawingsByPane(persisted.drawingsByPaneId));
+  const [selectedDrawing, setSelectedDrawing] = useState(null);
   const [replay, setReplay] = useState({
     enabled: false,
     selecting: false,
@@ -933,47 +1255,77 @@ export default function TradingWorkspace() {
     playhead: null,
     speed: 1,
   });
-  const [settings, setSettings] = useState({
-    sessionBreaks: false,
-    timezone: "Asia/Dhaka",
-    bullColor: "#10b981",
-    bearColor: "#f43f5e",
-    wickColor: "#94a3b8",
-    chart: {
-      gridVisible: true,
-      verticalGridVisible: true,
-      horizontalGridVisible: true,
-      crosshairVisible: true,
-      barSpacing: 6,
-      rightOffset: 8,
-    },
-    volume: {
-      visible: true,
-      heightRatio: 0.22,
-      opacity: 0.38,
-      upColor: "#10b981",
-      downColor: "#f43f5e",
-    },
-    indicators: {
-      sma: { enabled: false, length: 50, source: "close", color: "#f8fafc" },
-      ema: { enabled: true, length: 21, source: "close", color: "#10b981" },
-      rsi: { enabled: false, period: 14, source: "close", overbought: 70, oversold: 30, color: "#38bdf8" },
-      stochastic: { enabled: false, kPeriod: 14, dPeriod: 3, slowing: 3, kColor: "#a78bfa", dColor: "#f472b6" },
-      fvg: {
-        enabled: true,
-        minGapPercent: 0,
-        extendBars: 18,
-        bullColor: "rgba(16, 185, 129, 0.16)",
-        bearColor: "rgba(244, 63, 94, 0.16)",
-      },
-    },
-  });
+  const [settings, setSettings] = useState(() => mergeSettings(persisted.settings));
 
   const visiblePanes = useMemo(() => panes.slice(0, paneCount), [paneCount, panes]);
   const activePane = panes.find((pane) => pane.id === activePaneId) || panes[0];
 
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const timer = window.setTimeout(() => {
+      window.localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify({
+        paneCount,
+        splitMode,
+        panes,
+        activePaneId,
+        activeTool,
+        settings,
+        drawingsByPaneId,
+      }));
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [activePaneId, activeTool, drawingsByPaneId, paneCount, panes, settings, splitMode]);
+
   const updatePaneConfig = useCallback((paneId, patch) => {
     setPanes((current) => current.map((pane) => (pane.id === paneId ? { ...pane, ...patch } : pane)));
+  }, []);
+
+  const handleToolsChange = useCallback((paneId, tools) => {
+    setDrawingsByPaneId((current) => {
+      try {
+        if (JSON.stringify(current[paneId] || EMPTY_DRAWINGS) === JSON.stringify(tools)) {
+          return current;
+        }
+      } catch {
+        // Fall through and accept the update if serialization fails.
+      }
+
+      return {
+        ...current,
+        [paneId]: tools,
+      };
+    });
+  }, []);
+
+  const handleSelectedToolChange = useCallback((paneId, tool) => {
+    setSelectedDrawing(tool ? { paneId, tool } : null);
+  }, []);
+
+  const updateSelectedDrawing = useCallback((patch) => {
+    if (!selectedDrawing?.tool?.id) return;
+
+    setDrawingsByPaneId((current) => {
+      const paneTools = current[selectedDrawing.paneId] || [];
+      return {
+        ...current,
+        [selectedDrawing.paneId]: paneTools.map((tool) => (
+          tool.id === selectedDrawing.tool.id ? { ...tool, ...patch } : tool
+        )),
+      };
+    });
+    setSelectedDrawing((current) => (
+      current?.tool?.id === selectedDrawing.tool.id
+        ? { ...current, tool: { ...current.tool, ...patch } }
+        : current
+    ));
+  }, [selectedDrawing]);
+
+  const clearAllDrawings = useCallback(() => {
+    setDrawingsByPaneId({});
+    setClearToolsSignal((value) => value + 1);
+    setSelectedDrawing(null);
   }, []);
 
   const handleCandlesChange = useCallback((paneId, candles) => {
@@ -1073,7 +1425,7 @@ export default function TradingWorkspace() {
         <DrawingToolbar
           activeTool={activeTool}
           onToolChange={setActiveTool}
-          onClear={() => setClearToolsSignal((value) => value + 1)}
+          onClear={clearAllDrawings}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -1140,10 +1492,14 @@ export default function TradingWorkspace() {
                 paneCount={paneCount}
                 active={activePaneId === pane.id}
                 settings={settings}
+                paneDrawings={drawingsByPaneId[pane.id] || EMPTY_DRAWINGS}
                 activeTool={activeTool}
                 clearToolsSignal={clearToolsSignal}
                 replay={replay}
                 onActivate={() => setActivePaneId(pane.id)}
+                onToolChange={setActiveTool}
+                onToolsChange={handleToolsChange}
+                onSelectedToolChange={handleSelectedToolChange}
                 onConfigChange={updatePaneConfig}
                 onCandlesChange={handleCandlesChange}
                 onMarketSnapshot={setSnapshot}
@@ -1169,7 +1525,14 @@ export default function TradingWorkspace() {
           snapshot={snapshot}
         />
 
-        <ConfigModal open={modalOpen} onClose={() => setModalOpen(false)} settings={settings} onChange={setSettings} />
+        <ConfigModal
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          settings={settings}
+          onChange={setSettings}
+          selectedDrawing={selectedDrawing}
+          onSelectedDrawingChange={updateSelectedDrawing}
+        />
       </div>
     </div>
   );

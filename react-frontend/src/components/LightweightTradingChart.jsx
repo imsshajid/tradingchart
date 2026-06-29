@@ -100,6 +100,27 @@ const DEFAULT_INDICATORS = {
 };
 
 const DEFAULT_FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618];
+const DEFAULT_DRAWING_SETTINGS = {
+  keepDrawingMode: false,
+  color: "#f8fafc",
+  lineWidth: 2,
+  fillColor: "#60a5fa",
+  fillOpacity: 0.14,
+  zoneColor: "#60a5fa",
+  zoneOpacity: 0.16,
+  fibColor: "#38bdf8",
+  fibLabelColor: "#bae6fd",
+  fibFillColor: "#38bdf8",
+  fibFillOpacity: 0.08,
+  targetColor: "#10b981",
+  stopColor: "#f43f5e",
+  fibLevels: DEFAULT_FIB_LEVELS.map((value) => ({
+    value,
+    visible: true,
+    color: "#38bdf8",
+    label: "",
+  })),
+};
 const TOOL_TYPES = new Set([
   "cursor",
   "select",
@@ -133,22 +154,70 @@ function clampNumber(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-function hexToRgb(hex) {
-  const clean = String(hex || "#ffffff").replace("#", "");
-  const value = Number.parseInt(clean.length === 3
-    ? clean.split("").map((char) => char + char).join("")
-    : clean, 16);
+function clamp01(value, fallback = 1) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(0, Math.min(1, number));
+}
 
-  return {
-    r: (value >> 16) & 255,
-    g: (value >> 8) & 255,
-    b: value & 255,
-  };
+function colorToRgb(color, fallback = "#ffffff") {
+  const value = String(color || fallback).trim();
+  const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+
+  if (hex) {
+    const clean = hex[1].length === 3
+      ? hex[1].split("").map((char) => char + char).join("")
+      : hex[1];
+    const parsed = Number.parseInt(clean, 16);
+
+    return {
+      r: (parsed >> 16) & 255,
+      g: (parsed >> 8) & 255,
+      b: parsed & 255,
+    };
+  }
+
+  const rgb = value.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+  if (rgb) {
+    return {
+      r: Math.max(0, Math.min(255, Number(rgb[1]) || 0)),
+      g: Math.max(0, Math.min(255, Number(rgb[2]) || 0)),
+      b: Math.max(0, Math.min(255, Number(rgb[3]) || 0)),
+    };
+  }
+
+  return colorToRgb(fallback, "#ffffff");
 }
 
 function rgbaFromHex(hex, alpha) {
-  const { r, g, b } = hexToRgb(hex);
-  return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, Number(alpha)))})`;
+  const { r, g, b } = colorToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${clamp01(alpha, 1)})`;
+}
+
+function normalizeFibLevels(levels, fallbackColor = DEFAULT_DRAWING_SETTINGS.fibColor) {
+  const source = Array.isArray(levels) && levels.length ? levels : DEFAULT_FIB_LEVELS;
+
+  return source
+    .map((level) => {
+      const rawValue = typeof level === "number" ? level : level?.value;
+      const value = Number(rawValue);
+      if (!Number.isFinite(value)) return null;
+
+      return {
+        value,
+        visible: typeof level === "object" ? level.visible !== false : true,
+        color: typeof level === "object" ? level.color || fallbackColor : fallbackColor,
+        label: typeof level === "object" ? level.label || "" : "",
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.value - b.value);
+}
+
+function formatFibLevel(level) {
+  const percent = level * 100;
+  if (Number.isInteger(percent)) return `${percent}%`;
+  return `${Number(percent.toFixed(1))}%`;
 }
 
 function timeToUnixSeconds(time) {
@@ -379,26 +448,57 @@ function toolRequiredPoints(type) {
   return 2;
 }
 
-function defaultToolStyle(type) {
+function defaultToolStyle(type, settings = DEFAULT_DRAWING_SETTINGS) {
+  const lineWidth = Math.max(1, Math.min(8, Number(settings.lineWidth) || DEFAULT_DRAWING_SETTINGS.lineWidth));
+  const baseStyle = {
+    color: settings.color || DEFAULT_DRAWING_SETTINGS.color,
+    fill: rgbaFromHex(
+      settings.fillColor || DEFAULT_DRAWING_SETTINGS.fillColor,
+      settings.fillOpacity ?? DEFAULT_DRAWING_SETTINGS.fillOpacity,
+    ),
+    lineWidth,
+  };
+
   if (type === "fib-retracement" || type === "fib-extension") {
     return {
-      color: "#38bdf8",
-      labelColor: "#bae6fd",
-      fill: "rgba(56, 189, 248, 0.08)",
+      ...baseStyle,
+      color: settings.fibColor || DEFAULT_DRAWING_SETTINGS.fibColor,
+      labelColor: settings.fibLabelColor || DEFAULT_DRAWING_SETTINGS.fibLabelColor,
+      fill: rgbaFromHex(
+        settings.fibFillColor || DEFAULT_DRAWING_SETTINGS.fibFillColor,
+        settings.fibFillOpacity ?? DEFAULT_DRAWING_SETTINGS.fibFillOpacity,
+      ),
     };
   }
 
   if (type === "rectangle") {
     return {
-      color: "#60a5fa",
-      fill: "rgba(96, 165, 250, 0.14)",
+      ...baseStyle,
+      color: settings.zoneColor || settings.color || DEFAULT_DRAWING_SETTINGS.zoneColor,
+      fill: rgbaFromHex(
+        settings.zoneColor || settings.fillColor || DEFAULT_DRAWING_SETTINGS.zoneColor,
+        settings.zoneOpacity ?? settings.fillOpacity ?? DEFAULT_DRAWING_SETTINGS.zoneOpacity,
+      ),
     };
   }
 
-  return {
-    color: "#f8fafc",
-    fill: "rgba(96, 165, 250, 0.12)",
-  };
+  if (type === "position") {
+    return {
+      ...baseStyle,
+      targetColor: settings.targetColor || DEFAULT_DRAWING_SETTINGS.targetColor,
+      stopColor: settings.stopColor || DEFAULT_DRAWING_SETTINGS.stopColor,
+      targetFill: rgbaFromHex(
+        settings.targetColor || DEFAULT_DRAWING_SETTINGS.targetColor,
+        settings.zoneOpacity ?? DEFAULT_DRAWING_SETTINGS.zoneOpacity,
+      ),
+      stopFill: rgbaFromHex(
+        settings.stopColor || DEFAULT_DRAWING_SETTINGS.stopColor,
+        settings.zoneOpacity ?? DEFAULT_DRAWING_SETTINGS.zoneOpacity,
+      ),
+    };
+  }
+
+  return baseStyle;
 }
 
 function distanceToSegment(point, a, b) {
@@ -419,9 +519,14 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     candleOptions = DEFAULT_CANDLE_OPTIONS,
     indicatorSettings = DEFAULT_INDICATORS,
     fibLevels = DEFAULT_FIB_LEVELS,
+    drawingSettings = DEFAULT_DRAWING_SETTINGS,
     initialTools = [],
     activeTool = "cursor",
     onToolsChange,
+    onToolChange,
+    onToolComplete,
+    onSelectedToolChange,
+    onVisibleLogicalRangeChange,
     showToolBadge = true,
     fitContentToken,
     followLive = true,
@@ -450,9 +555,13 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const lastFitTokenRef = useRef(fitContentToken);
   const hasInitialFitRef = useRef(false);
   const onChartTimeClickRef = useRef(onChartTimeClick);
+  const onToolsChangeRef = useRef(onToolsChange);
+  const onVisibleLogicalRangeChangeRef = useRef(onVisibleLogicalRangeChange);
+  const onSelectedToolChangeRef = useRef(onSelectedToolChange);
+  const lastEmittedToolsRef = useRef(null);
   const redrawOverlayRef = useRef(() => {});
   const [toolMode, setToolMode] = useState(TOOL_TYPES.has(activeTool) ? activeTool : "cursor");
-  const [tools, setTools] = useState(initialTools);
+  const [tools, setTools] = useState(() => (Array.isArray(initialTools) ? initialTools : []));
   const [selectedToolId, setSelectedToolId] = useState(null);
   const [draftTool, setDraftTool] = useState(null);
   const [draftPoint, setDraftPoint] = useState(null);
@@ -478,6 +587,20 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const mergedVolumeSettings = useMemo(
     () => ({ ...DEFAULT_VOLUME_SETTINGS, ...volumeSettings }),
     [volumeSettings],
+  );
+  const mergedDrawingSettings = useMemo(
+    () => {
+      const next = { ...DEFAULT_DRAWING_SETTINGS, ...drawingSettings };
+      return {
+        ...next,
+        fibLevels: normalizeFibLevels(next.fibLevels || fibLevels, next.fibColor),
+      };
+    },
+    [drawingSettings, fibLevels],
+  );
+  const effectiveFibLevels = useMemo(
+    () => normalizeFibLevels(fibLevels || mergedDrawingSettings.fibLevels, mergedDrawingSettings.fibColor),
+    [fibLevels, mergedDrawingSettings.fibColor, mergedDrawingSettings.fibLevels],
   );
 
   const styledData = useMemo(() => withCandleStyles(data, barStyles), [data, barStyles]);
@@ -512,14 +635,57 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     return calculateFairValueGaps(data, mergedIndicators.fvg);
   }, [data, mergedIndicators.fvg]);
 
-  const emitToolsChange = useCallback((nextTools) => {
-    onToolsChange?.(nextTools);
-    return nextTools;
-  }, [onToolsChange]);
+  const commitTools = useCallback((updater) => {
+    setTools((current) => (typeof updater === "function" ? updater(current) : updater));
+  }, []);
+
+  const completeTool = useCallback((newTool) => {
+    commitTools((current) => [...current, newTool]);
+    setSelectedToolId(newTool.id);
+    onToolComplete?.(newTool);
+
+    if (!mergedDrawingSettings.keepDrawingMode) {
+      setToolMode("cursor");
+      onToolChange?.("cursor");
+    }
+  }, [commitTools, mergedDrawingSettings.keepDrawingMode, onToolChange, onToolComplete]);
 
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    onToolsChangeRef.current = onToolsChange;
+  }, [onToolsChange]);
+
+  useEffect(() => {
+    let serialized = "";
+    try {
+      serialized = JSON.stringify(tools);
+    } catch {
+      serialized = String(Date.now());
+    }
+
+    if (lastEmittedToolsRef.current === serialized) return;
+    lastEmittedToolsRef.current = serialized;
+    onToolsChangeRef.current?.(tools);
+  }, [tools]);
+
+  useEffect(() => {
+    if (!Array.isArray(initialTools)) return;
+
+    setTools((current) => {
+      try {
+        return JSON.stringify(current) === JSON.stringify(initialTools) ? current : initialTools;
+      } catch {
+        return initialTools;
+      }
+    });
+  }, [initialTools]);
+
+  useEffect(() => {
+    onSelectedToolChangeRef.current?.(tools.find((tool) => tool.id === selectedToolId) || null);
+  }, [selectedToolId, tools]);
 
   const resize = useCallback(() => {
     const host = chartHostRef.current;
@@ -586,11 +752,18 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const firstPriceY = priceToCanvasY(tool.points[0]?.price);
     if (!points.length && firstPriceY === null) return;
 
-    const levels = tool.levels || fibLevels;
+    const levels = normalizeFibLevels(tool.levels || effectiveFibLevels, tool.color || mergedDrawingSettings.fibColor);
+    const lineWidth = Math.max(1, Math.min(10, Number(tool.lineWidth) || mergedDrawingSettings.lineWidth || 2));
     context.save();
-    context.lineWidth = selected ? 2.25 : 1.75;
-    context.strokeStyle = selected ? "#60a5fa" : tool.color || "#94a3b8";
-    context.fillStyle = tool.fill || "rgba(96, 165, 250, 0.12)";
+    context.lineWidth = selected ? lineWidth + 0.75 : lineWidth;
+    context.strokeStyle = tool.color || mergedDrawingSettings.color || "#94a3b8";
+    context.fillStyle = tool.fill || rgbaFromHex(
+      mergedDrawingSettings.fillColor,
+      mergedDrawingSettings.fillOpacity,
+    );
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
     context.setLineDash(tool.dashed ? [6, 6] : []);
 
     if (tool.type === "horizontal-line") {
@@ -661,7 +834,16 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     }
 
     context.restore();
-  }, [dataPointToCanvasPoint, fibLevels, priceToCanvasY]);
+  }, [
+    dataPointToCanvasPoint,
+    effectiveFibLevels,
+    mergedDrawingSettings.color,
+    mergedDrawingSettings.fibColor,
+    mergedDrawingSettings.fillColor,
+    mergedDrawingSettings.fillOpacity,
+    mergedDrawingSettings.lineWidth,
+    priceToCanvasY,
+  ]);
 
   const drawFairValueGap = useCallback((context, gap) => {
     const topLeft = dataPointToCanvasPoint({ time: gap.startTime, price: gap.top });
@@ -676,12 +858,13 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     if (width < 1 || height < 1) return;
 
     context.save();
-    context.fillStyle = gap.type === "bullish"
-      ? mergedIndicators.fvg.bullColor
-      : mergedIndicators.fvg.bearColor;
+    context.fillStyle = rgbaFromHex(
+      gap.type === "bullish" ? mergedIndicators.fvg.bullColor : mergedIndicators.fvg.bearColor,
+      mergedIndicators.fvg.opacity ?? 0.16,
+    );
     context.strokeStyle = gap.type === "bullish"
-      ? "rgba(16, 185, 129, 0.36)"
-      : "rgba(244, 63, 94, 0.36)";
+      ? rgbaFromHex(mergedIndicators.fvg.bullColor, 0.36)
+      : rgbaFromHex(mergedIndicators.fvg.bearColor, 0.36);
     context.lineWidth = 1;
     context.fillRect(x, y, width, height);
     context.strokeRect(x, y, width, height);
@@ -690,10 +873,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     dataPointToCanvasPoint,
     mergedIndicators.fvg.bearColor,
     mergedIndicators.fvg.bullColor,
+    mergedIndicators.fvg.opacity,
   ]);
 
   const redrawOverlay = useCallback(() => {
-    resize();
     const overlay = overlayRef.current;
     if (!overlay) return;
 
@@ -715,7 +898,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       };
       drawTool(context, preview, true);
     }
-  }, [draftPoint, draftTool, drawFairValueGap, drawTool, fvgData, resize, selectedToolId, tools]);
+  }, [draftPoint, draftTool, drawFairValueGap, drawTool, fvgData, selectedToolId, tools]);
 
   useEffect(() => {
     redrawOverlayRef.current = redrawOverlay;
@@ -724,6 +907,14 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   useEffect(() => {
     onChartTimeClickRef.current = onChartTimeClick;
   }, [onChartTimeClick]);
+
+  useEffect(() => {
+    onVisibleLogicalRangeChangeRef.current = onVisibleLogicalRangeChange;
+  }, [onVisibleLogicalRangeChange]);
+
+  useEffect(() => {
+    onSelectedToolChangeRef.current = onSelectedToolChange;
+  }, [onSelectedToolChange]);
 
   const hitTestTool = useCallback((event) => {
     const overlay = overlayRef.current;
@@ -808,26 +999,38 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       return tools;
     },
     addTool(tool) {
-      const nextTool = { id: createId(tool.type || "tool"), levels: fibLevels, ...tool };
-      setTools((current) => emitToolsChange([...current, nextTool]));
+      const nextTool = {
+        ...defaultToolStyle(tool.type || "trendline", mergedDrawingSettings),
+        id: createId(tool.type || "tool"),
+        levels: effectiveFibLevels,
+        ...tool,
+      };
+      commitTools((current) => [...current, nextTool]);
+      setSelectedToolId(nextTool.id);
       return nextTool.id;
     },
+    getSelectedTool() {
+      return tools.find((tool) => tool.id === selectedToolId) || null;
+    },
+    setSelectedTool(id) {
+      setSelectedToolId(id || null);
+    },
     updateTool(id, patch) {
-      setTools((current) => emitToolsChange(
-        current.map((tool) => (tool.id === id ? { ...tool, ...patch } : tool)),
-      ));
+      commitTools((current) => current.map((tool) => (
+        tool.id === id ? { ...tool, ...patch } : tool
+      )));
     },
     deleteTool(id) {
-      setTools((current) => emitToolsChange(current.filter((tool) => tool.id !== id)));
+      commitTools((current) => current.filter((tool) => tool.id !== id));
       setSelectedToolId((current) => (current === id ? null : current));
     },
     deleteSelectedTool() {
       if (!selectedToolId) return;
-      setTools((current) => emitToolsChange(current.filter((tool) => tool.id !== selectedToolId)));
+      commitTools((current) => current.filter((tool) => tool.id !== selectedToolId));
       setSelectedToolId(null);
     },
     clearTools() {
-      setTools(emitToolsChange([]));
+      commitTools([]);
       setSelectedToolId(null);
     },
     fitContent() {
@@ -836,7 +1039,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     scrollToRealTime() {
       chartRef.current?.timeScale().scrollToRealTime();
     },
-  }), [emitToolsChange, fibLevels, selectedToolId, tools]);
+  }), [commitTools, effectiveFibLevels, mergedDrawingSettings, selectedToolId, tools]);
 
   useEffect(() => {
     setToolMode(TOOL_TYPES.has(activeTool) ? activeTool : "cursor");
@@ -958,7 +1161,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       visible: true,
     });
 
-    const redrawFromSubscription = () => redrawOverlayRef.current();
+    const redrawFromSubscription = (range) => {
+      redrawOverlayRef.current();
+      onVisibleLogicalRangeChangeRef.current?.(range);
+    };
     const clickSubscription = (param) => {
       const seconds = timeToUnixSeconds(param?.time);
       if (seconds !== null) onChartTimeClickRef.current?.(seconds);
@@ -1126,15 +1332,23 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setDraftTool(null);
+        setDraftPoint(null);
+        setToolMode("cursor");
+        onToolChange?.("cursor");
+        return;
+      }
+
       if ((event.key === "Delete" || event.key === "Backspace") && selectedToolId) {
-        setTools((current) => emitToolsChange(current.filter((tool) => tool.id !== selectedToolId)));
+        commitTools((current) => current.filter((tool) => tool.id !== selectedToolId));
         setSelectedToolId(null);
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [emitToolsChange, selectedToolId]);
+  }, [commitTools, onToolChange, selectedToolId]);
 
   const handlePointerDown = useCallback((event) => {
     event.preventDefault();
@@ -1167,11 +1381,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
           id: createId(toolMode),
           type: toolMode,
           points: [point],
-          levels: fibLevels,
-          ...defaultToolStyle(toolMode),
+          levels: effectiveFibLevels,
+          ...defaultToolStyle(toolMode, mergedDrawingSettings),
         };
-        setTools((current) => emitToolsChange([...current, newTool]));
-        setSelectedToolId(newTool.id);
+        completeTool(newTool);
         return;
       }
 
@@ -1179,8 +1392,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         id: createId(toolMode),
         type: toolMode,
         points: [point],
-        levels: fibLevels,
-        ...defaultToolStyle(toolMode),
+        levels: effectiveFibLevels,
+        ...defaultToolStyle(toolMode, mergedDrawingSettings),
       });
       setDraftPoint(point);
       return;
@@ -1189,15 +1402,22 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const nextPoints = [...draftTool.points, point];
     if (nextPoints.length >= requiredPoints) {
       const newTool = { ...draftTool, points: nextPoints };
-      setTools((current) => emitToolsChange([...current, newTool]));
-      setSelectedToolId(newTool.id);
+      completeTool(newTool);
       setDraftTool(null);
       setDraftPoint(null);
     } else {
       setDraftTool({ ...draftTool, points: nextPoints });
       setDraftPoint(point);
     }
-  }, [canvasPointToDataPoint, draftTool, emitToolsChange, fibLevels, hitTestTool, toolMode]);
+  }, [
+    canvasPointToDataPoint,
+    completeTool,
+    draftTool,
+    effectiveFibLevels,
+    hitTestTool,
+    mergedDrawingSettings,
+    toolMode,
+  ]);
 
   const handlePointerMove = useCallback((event) => {
     const point = canvasPointToDataPoint(event);
@@ -1211,7 +1431,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const interaction = interactionRef.current;
     if (!interaction) return;
 
-    setTools((current) => emitToolsChange(current.map((tool) => {
+    commitTools((current) => current.map((tool) => {
       if (tool.id !== interaction.toolId) return tool;
 
       const points = [...interaction.originalTool.points];
@@ -1231,8 +1451,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       }
 
       return { ...tool, points };
-    })));
-  }, [canvasPointToDataPoint, draftTool, emitToolsChange]);
+    }));
+  }, [canvasPointToDataPoint, commitTools, draftTool]);
 
   const handlePointerUp = useCallback((event) => {
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -1253,9 +1473,10 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       <div ref={chartHostRef} className="absolute inset-0 z-0" />
       <canvas
         ref={overlayRef}
-        className="absolute inset-0 z-20 cursor-crosshair"
+        className="absolute inset-0 z-20"
         style={{
           pointerEvents: toolMode === "cursor" ? "none" : "auto",
+          cursor: toolMode === "select" ? "move" : "crosshair",
           touchAction: "none",
         }}
         onPointerDown={handlePointerDown}
@@ -1329,15 +1550,28 @@ function drawExtendedLine(context, start, end, rayOnly) {
 function drawFibRetracement(context, start, end, levels, tool) {
   const left = Math.min(start.x, end.x);
   const right = Math.max(start.x, end.x);
+  const top = Math.min(start.y, end.y);
+  const height = Math.abs(end.y - start.y);
+
+  if (height > 1) {
+    context.save();
+    context.setLineDash([]);
+    context.fillStyle = tool.fill || "rgba(56, 189, 248, 0.08)";
+    context.fillRect(left, top, right - left, height);
+    context.restore();
+  }
 
   levels.forEach((level) => {
-    const y = start.y + (end.y - start.y) * level;
+    if (level.visible === false) return;
+    const value = Number(level.value);
+    const y = start.y + (end.y - start.y) * value;
+    context.strokeStyle = level.color || tool.color || context.strokeStyle;
     context.beginPath();
     context.moveTo(left, y);
     context.lineTo(right, y);
     context.stroke();
     context.fillStyle = tool.labelColor || context.strokeStyle;
-    context.fillText(String(level), right + 6, y - 3);
+    context.fillText(level.label || formatFibLevel(value), right + 6, y - 3);
   });
 }
 
@@ -1347,13 +1581,16 @@ function drawFibExtension(context, start, end, anchor, levels, tool) {
   const right = Math.max(end.x, anchor.x) + 160;
 
   levels.forEach((level) => {
-    const y = anchor.y + priceVectorY * level;
+    if (level.visible === false) return;
+    const value = Number(level.value);
+    const y = anchor.y + priceVectorY * value;
+    context.strokeStyle = level.color || tool.color || context.strokeStyle;
     context.beginPath();
     context.moveTo(left, y);
     context.lineTo(right, y);
     context.stroke();
     context.fillStyle = tool.labelColor || context.strokeStyle;
-    context.fillText(String(level), right + 6, y - 3);
+    context.fillText(level.label || formatFibLevel(value), right + 6, y - 3);
   });
 }
 
@@ -1368,25 +1605,29 @@ function drawPositionTool(context, entry, target, stop, tool) {
 
   context.save();
   context.setLineDash([]);
-  context.fillStyle = isShort ? "rgba(244, 63, 94, 0.18)" : "rgba(16, 185, 129, 0.18)";
+  context.fillStyle = isShort
+    ? tool.stopFill || "rgba(244, 63, 94, 0.18)"
+    : tool.targetFill || "rgba(16, 185, 129, 0.18)";
   context.fillRect(left, rewardTop, right - left, rewardHeight);
-  context.fillStyle = isShort ? "rgba(16, 185, 129, 0.14)" : "rgba(244, 63, 94, 0.14)";
+  context.fillStyle = isShort
+    ? tool.targetFill || "rgba(16, 185, 129, 0.14)"
+    : tool.stopFill || "rgba(244, 63, 94, 0.14)";
   context.fillRect(left, riskTop, right - left, riskHeight);
 
   context.strokeStyle = tool.color || "#d4d4d8";
-  context.lineWidth = 1;
+  context.lineWidth = Math.max(1, Number(tool.lineWidth) || 1);
   context.beginPath();
   context.moveTo(left, entry.y);
   context.lineTo(right, entry.y);
   context.stroke();
 
-  context.strokeStyle = isShort ? "#f43f5e" : "#10b981";
+  context.strokeStyle = isShort ? tool.stopColor || "#f43f5e" : tool.targetColor || "#10b981";
   context.beginPath();
   context.moveTo(left, target.y);
   context.lineTo(right, target.y);
   context.stroke();
 
-  context.strokeStyle = isShort ? "#10b981" : "#f43f5e";
+  context.strokeStyle = isShort ? tool.targetColor || "#10b981" : tool.stopColor || "#f43f5e";
   context.beginPath();
   context.moveTo(left, stop.y);
   context.lineTo(right, stop.y);
