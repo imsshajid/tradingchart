@@ -245,6 +245,62 @@ function formatFibLevel(level) {
   return `${Number(percent.toFixed(1))}%`;
 }
 
+function formatTradeNumber(value, minimumDigits = 2, maximumDigits = 2) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: minimumDigits,
+    maximumFractionDigits: maximumDigits,
+  }).format(number);
+}
+
+function formatTradePrice(value) {
+  const number = Math.abs(Number(value));
+  if (!Number.isFinite(number)) return "-";
+  if (number >= 1000) return formatTradeNumber(value, 2, 2);
+  if (number >= 100) return formatTradeNumber(value, 2, 3);
+  if (number >= 1) return formatTradeNumber(value, 4, 4);
+  return formatTradeNumber(value, 5, 5);
+}
+
+function inferPipSize(referencePrice) {
+  const price = Math.abs(Number(referencePrice));
+  if (!Number.isFinite(price)) return 1;
+  if (price < 10) return 0.0001;
+  if (price < 200) return 0.01;
+  return 1;
+}
+
+function formatPointsAndPips(points, referencePrice) {
+  const absolutePoints = Math.abs(Number(points));
+  if (!Number.isFinite(absolutePoints)) return "-";
+  const pipSize = inferPipSize(referencePrice);
+  const formattedPoints = formatTradeNumber(absolutePoints, 2, absolutePoints >= 100 ? 2 : 4);
+  if (pipSize === 1) return `${formattedPoints} pts/pips`;
+  return `${formattedPoints} pts / ${formatTradeNumber(absolutePoints / pipSize, 1, 1)} pips`;
+}
+
+function drawPositionLabel(context, text, x, y, color) {
+  context.save();
+  context.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  const paddingX = 6;
+  const width = context.measureText(text).width + paddingX * 2;
+  const height = 18;
+  const canvasWidth = context.canvas.clientWidth || context.canvas.width;
+  const canvasHeight = context.canvas.clientHeight || context.canvas.height;
+  const left = Math.max(4, Math.min(canvasWidth - width - 4, x));
+  const top = Math.max(4, Math.min(canvasHeight - height - 4, y));
+
+  context.fillStyle = "rgba(9, 12, 16, 0.92)";
+  context.strokeStyle = color;
+  context.lineWidth = 1;
+  context.fillRect(left, top, width, height);
+  context.strokeRect(left, top, width, height);
+  context.fillStyle = "#f8fafc";
+  context.fillText(text, left + paddingX, top + 12);
+  context.restore();
+}
+
 function timeToUnixSeconds(time) {
   if (typeof time === "number") return time;
   if (time && typeof time === "object" && "year" in time) {
@@ -480,8 +536,9 @@ function toolDirection(type) {
 function toolRequiredPoints(type) {
   if (type === "cursor") return 0;
   if (type === "horizontal-line" || type === "horizontal-ray" || type === "vertical-line") return 1;
+  if (type === "long-position" || type === "short-position") return 1;
   if (type === "fib-extension") return 3;
-  if (type === "position" || type === "long-position" || type === "short-position") return 3;
+  if (type === "position") return 3;
   return 2;
 }
 
@@ -849,6 +906,58 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       price,
     };
   }, [mergedDrawingSettings.magnetMode]);
+
+  const createDefaultPositionPoints = useCallback((entry, direction) => {
+    const entryPrice = Number(entry?.price);
+    const isShort = direction === "short";
+    const series = candleSeriesRef.current;
+    const overlay = overlayRef.current;
+    const entryY = Number.isFinite(entryPrice) && series
+      ? series.priceToCoordinate(entryPrice)
+      : null;
+    let riskDistance = Math.abs(entryPrice || 0) * 0.01;
+
+    if (series && overlay && Number.isFinite(entryY)) {
+      const rect = overlay.getBoundingClientRect();
+      const riskPixels = Math.max(36, Math.min(96, rect.height * 0.16));
+      const stopY = isShort ? entryY - riskPixels : entryY + riskPixels;
+      const stopPrice = series.coordinateToPrice(stopY);
+      if (Number.isFinite(Number(stopPrice))) {
+        riskDistance = Math.abs(Number(stopPrice) - entryPrice);
+      }
+    }
+
+    if (!Number.isFinite(riskDistance) || riskDistance <= 0) {
+      riskDistance = Math.max(Math.abs(entryPrice) * 0.01, 1);
+    }
+
+    const targetPrice = isShort ? entryPrice - riskDistance : entryPrice + riskDistance;
+    const stopPrice = isShort ? entryPrice + riskDistance : entryPrice - riskDistance;
+    const entryLogical = pointToLogical(entry);
+    const endLogical = Number.isFinite(entryLogical) ? entryLogical + 30 : null;
+    const candles = dataRef.current;
+    const lastCandle = candles[candles.length - 1];
+    const previousCandle = candles[candles.length - 2];
+    const timeStep = Number(lastCandle?.time) > Number(previousCandle?.time)
+      ? Number(lastCandle.time) - Number(previousCandle.time)
+      : 60;
+    const logicalTime = endLogical !== null && endLogical >= 0 && endLogical < candles.length
+      ? candles[Math.round(endLogical)]?.time
+      : null;
+    const projectedTime = typeof entry.time === "number"
+      ? entry.time + timeStep * 30
+      : entry.time;
+    const endPointBase = {
+      time: logicalTime ?? projectedTime,
+      ...(endLogical !== null ? { logical: endLogical } : {}),
+    };
+
+    return [
+      entry,
+      { ...endPointBase, price: targetPrice },
+      { ...endPointBase, price: stopPrice },
+    ];
+  }, [pointToLogical]);
 
   const selectedTool = useMemo(
     () => tools.find((tool) => tool.id === selectedToolId) || null,
@@ -1664,6 +1773,19 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const toolType = storedToolType(toolMode);
     const direction = toolDirection(toolMode);
     if (!draftTool) {
+      if (toolType === "position" && direction) {
+        const newTool = {
+          id: createId(toolType),
+          type: toolType,
+          direction,
+          points: createDefaultPositionPoints(point, direction),
+          levels: effectiveFibLevels,
+          ...defaultToolStyle(toolType, mergedDrawingSettings),
+        };
+        completeTool(newTool);
+        return;
+      }
+
       if (requiredPoints === 1) {
         const newTool = {
           id: createId(toolType),
@@ -1703,6 +1825,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     applyMagnetToPoint,
     canvasPointToDataPoint,
     completeTool,
+    createDefaultPositionPoints,
     draftTool,
     effectiveFibLevels,
     hitTestTool,
@@ -2143,16 +2266,29 @@ function drawPositionTool(context, entry, target, stop, tool) {
   const riskTop = Math.min(entry.y, stop.y);
   const riskHeight = Math.abs(stop.y - entry.y);
   const isShort = tool.direction === "short";
+  const [entryData, targetData, stopData] = tool.points || [];
+  const entryPrice = Number(entryData?.price);
+  const targetPrice = Number(targetData?.price);
+  const stopPrice = Number(stopData?.price);
+  const rewardPoints = isShort ? entryPrice - targetPrice : targetPrice - entryPrice;
+  const riskPoints = isShort ? stopPrice - entryPrice : entryPrice - stopPrice;
+  const reward = Math.abs(Number(rewardPoints));
+  const risk = Math.abs(Number(riskPoints));
+  const rr = risk > 0 ? reward / risk : 0;
+  const rewardPercent = Number.isFinite(entryPrice) && Math.abs(entryPrice) > 0
+    ? (reward / Math.abs(entryPrice)) * 100
+    : 0;
+  const riskPercent = Number.isFinite(entryPrice) && Math.abs(entryPrice) > 0
+    ? (risk / Math.abs(entryPrice)) * 100
+    : 0;
+  const targetColor = tool.targetColor || "#10b981";
+  const stopColor = tool.stopColor || "#f43f5e";
 
   context.save();
   context.setLineDash([]);
-  context.fillStyle = isShort
-    ? tool.stopFill || "rgba(244, 63, 94, 0.18)"
-    : tool.targetFill || "rgba(16, 185, 129, 0.18)";
+  context.fillStyle = tool.targetFill || "rgba(16, 185, 129, 0.18)";
   context.fillRect(left, rewardTop, right - left, rewardHeight);
-  context.fillStyle = isShort
-    ? tool.targetFill || "rgba(16, 185, 129, 0.14)"
-    : tool.stopFill || "rgba(244, 63, 94, 0.14)";
+  context.fillStyle = tool.stopFill || "rgba(244, 63, 94, 0.14)";
   context.fillRect(left, riskTop, right - left, riskHeight);
 
   context.strokeStyle = tool.color || "#d4d4d8";
@@ -2162,22 +2298,29 @@ function drawPositionTool(context, entry, target, stop, tool) {
   context.lineTo(right, entry.y);
   context.stroke();
 
-  context.strokeStyle = isShort ? tool.stopColor || "#f43f5e" : tool.targetColor || "#10b981";
+  context.strokeStyle = targetColor;
   context.beginPath();
   context.moveTo(left, target.y);
   context.lineTo(right, target.y);
   context.stroke();
 
-  context.strokeStyle = isShort ? tool.targetColor || "#10b981" : tool.stopColor || "#f43f5e";
+  context.strokeStyle = stopColor;
   context.beginPath();
   context.moveTo(left, stop.y);
   context.lineTo(right, stop.y);
   context.stroke();
 
-  context.fillStyle = "#f8fafc";
-  context.font = "11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-  context.fillText(isShort ? "SHORT" : "LONG", left + 6, entry.y - 7);
   context.restore();
+
+  const directionLabel = isShort ? "SHORT" : "LONG";
+  const targetText = `TP ${formatTradePrice(targetPrice)} | +${formatPointsAndPips(reward, entryPrice)} (+${formatTradeNumber(rewardPercent, 2, 2)}%)`;
+  const stopText = `SL ${formatTradePrice(stopPrice)} | -${formatPointsAndPips(risk, entryPrice)} (-${formatTradeNumber(riskPercent, 2, 2)}%)`;
+  const entryText = `${directionLabel} ENTRY ${formatTradePrice(entryPrice)} | RR ${Number.isFinite(rr) ? formatTradeNumber(rr, 2, 2) : "-"}`;
+  const labelX = left + 6;
+
+  drawPositionLabel(context, targetText, labelX, target.y - 22, targetColor);
+  drawPositionLabel(context, entryText, labelX, entry.y - 22, tool.color || "#d4d4d8");
+  drawPositionLabel(context, stopText, labelX, stop.y + 4, stopColor);
 }
 
 export default LightweightTradingChart;
