@@ -4,16 +4,24 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Max-Age": "86400",
   "Content-Type": "application/json; charset=utf-8",
-  "Cache-Control": "public, max-age=15, stale-while-revalidate=60",
+  "Cache-Control": "public, max-age=10, stale-while-revalidate=30",
 };
 
 const DEFAULT_TICKER = "BTCUSD";
 const TICKER_PATTERN = /^[A-Z0-9.^=-]{1,24}$/;
-const YAHOO_TIMEOUT_MS = 9000;
+const REQUEST_TIMEOUT_MS = 9000;
+const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
+
+const HYPERLIQUID_ASSETS = {
+  BTCUSD: "BTC",
+  ETHUSD: "ETH",
+  SOLUSD: "SOL",
+};
 
 const SYMBOL_ALIASES = {
   BTCUSD: "BTC-USD",
   ETHUSD: "ETH-USD",
+  SOLUSD: "SOL-USD",
   XAUUSD: "GC=F",
   USTECH: "NQ=F",
   USOIL: "CL=F",
@@ -22,12 +30,12 @@ const SYMBOL_ALIASES = {
 };
 
 const RESOLUTION_CONFIG = {
-  "1m": { range: "5d", interval: "1m" },
-  "5m": { range: "1mo", interval: "5m" },
-  "15m": { range: "1mo", interval: "15m" },
-  "1h": { range: "3mo", interval: "60m" },
-  "4h": { range: "6mo", interval: "60m", aggregateSeconds: 4 * 60 * 60 },
-  "1D": { range: "1y", interval: "1d" },
+  "1m": { yahooRange: "5d", yahooInterval: "1m", hyperliquidInterval: "1m", lookbackMs: 1000 * 60 * 60 * 24 * 2 },
+  "5m": { yahooRange: "1mo", yahooInterval: "5m", hyperliquidInterval: "5m", lookbackMs: 1000 * 60 * 60 * 24 * 10 },
+  "15m": { yahooRange: "1mo", yahooInterval: "15m", hyperliquidInterval: "15m", lookbackMs: 1000 * 60 * 60 * 24 * 31 },
+  "1h": { yahooRange: "3mo", yahooInterval: "60m", hyperliquidInterval: "1h", lookbackMs: 1000 * 60 * 60 * 24 * 90 },
+  "4h": { yahooRange: "6mo", yahooInterval: "60m", yahooAggregateSeconds: 4 * 60 * 60, hyperliquidInterval: "4h", lookbackMs: 1000 * 60 * 60 * 24 * 180 },
+  "1D": { yahooRange: "1y", yahooInterval: "1d", hyperliquidInterval: "1d", lookbackMs: 1000 * 60 * 60 * 24 * 365 },
 };
 
 function jsonResponse(payload, statusCode = 200) {
@@ -94,6 +102,19 @@ function mapYahooCandles(result) {
     .filter(isCompleteCandle);
 }
 
+function mapHyperliquidCandle(entry) {
+  const candle = {
+    time: Math.floor(toFiniteNumber(entry?.t) / 1000),
+    open: toFiniteNumber(entry?.o),
+    high: toFiniteNumber(entry?.h),
+    low: toFiniteNumber(entry?.l),
+    close: toFiniteNumber(entry?.c),
+    volume: toFiniteNumber(entry?.v),
+  };
+
+  return isCompleteCandle(candle) ? candle : null;
+}
+
 function aggregateCandles(candles, bucketSeconds) {
   const buckets = new Map();
 
@@ -122,6 +143,114 @@ function aggregateCandles(candles, bucketSeconds) {
   return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
 }
 
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchHyperliquidHistory(ticker, resolution) {
+  const coin = HYPERLIQUID_ASSETS[ticker];
+  const config = RESOLUTION_CONFIG[resolution];
+  if (!coin || !config?.hyperliquidInterval) {
+    throw new Error("Ticker is not supported by Hyperliquid.");
+  }
+
+  const endTime = Date.now();
+  const startTime = endTime - config.lookbackMs;
+  const response = await fetchWithTimeout(HYPERLIQUID_INFO_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      type: "candleSnapshot",
+      req: {
+        coin,
+        interval: config.hyperliquidInterval,
+        startTime,
+        endTime,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Hyperliquid responded with ${response.status}.`);
+  }
+
+  const payload = await response.json();
+  const data = (Array.isArray(payload) ? payload : [])
+    .map(mapHyperliquidCandle)
+    .filter(Boolean)
+    .sort((a, b) => a.time - b.time);
+
+  if (!data.length) {
+    throw new Error("Hyperliquid returned no candles.");
+  }
+
+  return {
+    source: "hyperliquid",
+    coin,
+    interval: config.hyperliquidInterval,
+    data,
+  };
+}
+
+async function fetchYahooHistory(ticker, resolution) {
+  const yahooTicker = SYMBOL_ALIASES[ticker] || ticker;
+  const config = RESOLUTION_CONFIG[resolution];
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?range=${config.yahooRange}&interval=${config.yahooInterval}`;
+  const response = await fetchWithTimeout(yahooUrl, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0 NetlifyMarketEngine/1.0",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Yahoo Finance responded with ${response.status}.`);
+  }
+
+  const yahooJson = await response.json();
+  const chart = yahooJson?.chart;
+  const chartError = chart?.error;
+  const result = chart?.result?.[0];
+
+  if (chartError) {
+    throw new Error(chartError.description || chartError.code || "Yahoo Finance returned an error.");
+  }
+
+  if (!result) {
+    throw new Error("Yahoo Finance returned no chart result.");
+  }
+
+  const mappedCandles = mapYahooCandles(result);
+  const data = config.yahooAggregateSeconds
+    ? aggregateCandles(mappedCandles, config.yahooAggregateSeconds)
+    : mappedCandles;
+
+  if (!data.length) {
+    throw new Error("Yahoo Finance returned no candles.");
+  }
+
+  return {
+    source: "yahoo-finance",
+    yahooTicker,
+    range: config.yahooRange,
+    interval: config.yahooInterval,
+    data,
+  };
+}
+
 exports.handler = async function handler(event) {
   if (event.httpMethod === "OPTIONS") {
     return {
@@ -146,67 +275,40 @@ exports.handler = async function handler(event) {
     return jsonResponse({ success: false, error: error.message }, 400);
   }
 
-  const yahooTicker = SYMBOL_ALIASES[ticker] || ticker;
-  const config = RESOLUTION_CONFIG[resolution];
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?range=${config.range}&interval=${config.interval}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), YAHOO_TIMEOUT_MS);
-
   try {
-    const yahooResponse = await fetch(yahooUrl, {
-      signal: controller.signal,
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "Mozilla/5.0 NetlifyMarketEngine/1.0",
-      },
-    });
+    let result;
+    let fallbackError = null;
 
-    if (!yahooResponse.ok) {
-      throw new Error(`Yahoo Finance responded with ${yahooResponse.status}.`);
-    }
-
-    const yahooJson = await yahooResponse.json();
-    const chart = yahooJson?.chart;
-    const chartError = chart?.error;
-    const result = chart?.result?.[0];
-
-    if (chartError) {
-      throw new Error(chartError.description || chartError.code || "Yahoo Finance returned an error.");
+    if (HYPERLIQUID_ASSETS[ticker]) {
+      try {
+        result = await fetchHyperliquidHistory(ticker, resolution);
+      } catch (error) {
+        fallbackError = error.message;
+      }
     }
 
     if (!result) {
-      throw new Error("Yahoo Finance returned no chart result.");
+      result = await fetchYahooHistory(ticker, resolution);
     }
-
-    const mappedCandles = mapYahooCandles(result);
-    const data = config.aggregateSeconds
-      ? aggregateCandles(mappedCandles, config.aggregateSeconds)
-      : mappedCandles;
 
     return jsonResponse({
       success: true,
-      source: "yahoo-finance",
       ticker,
-      yahooTicker,
       resolution,
-      range: config.range,
-      interval: config.interval,
-      count: data.length,
-      data,
+      count: result.data.length,
+      fallbackError,
+      ...result,
     });
   } catch (error) {
     const message = error.name === "AbortError"
-      ? "Yahoo Finance request timed out."
+      ? "Market data request timed out."
       : error.message;
 
     return jsonResponse({
       success: false,
       ticker,
-      yahooTicker,
       resolution,
       error: message,
     }, 502);
-  } finally {
-    clearTimeout(timeout);
   }
 };

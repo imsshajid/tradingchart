@@ -249,6 +249,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     activeTool = "select",
     onToolsChange,
     showToolBadge = true,
+    fitContentToken,
+    followLive = true,
     className = "",
   },
   ref,
@@ -265,6 +267,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   const stochasticDSeriesRef = useRef(null);
   const resizeObserverRef = useRef(null);
   const interactionRef = useRef(null);
+  const lastFitTokenRef = useRef(fitContentToken);
+  const hasInitialFitRef = useRef(false);
   const redrawOverlayRef = useRef(() => {});
   const [toolMode, setToolMode] = useState(TOOL_TYPES.has(activeTool) ? activeTool : "select");
   const [tools, setTools] = useState(initialTools);
@@ -694,11 +698,22 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   useEffect(() => {
     candleSeriesRef.current?.setData(styledData);
     volumeSeriesRef.current?.setData(volumeData);
-    if (styledData.length > 0) {
+    if (followLive) {
+      chartRef.current?.timeScale().scrollToRealTime();
+    }
+    if (!hasInitialFitRef.current && styledData.length > 0) {
+      hasInitialFitRef.current = true;
       chartRef.current?.timeScale().fitContent();
     }
     redrawOverlay();
-  }, [redrawOverlay, styledData, volumeData]);
+  }, [followLive, redrawOverlay, styledData, volumeData]);
+
+  useEffect(() => {
+    if (lastFitTokenRef.current === fitContentToken) return;
+    lastFitTokenRef.current = fitContentToken;
+    chartRef.current?.timeScale().fitContent();
+    redrawOverlay();
+  }, [fitContentToken, redrawOverlay]);
 
   useEffect(() => {
     emaSeriesRef.current?.applyOptions({ color: mergedIndicators.ema.color });
