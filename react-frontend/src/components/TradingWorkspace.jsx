@@ -5,7 +5,6 @@ import {
   BarChart3,
   CandlestickChart,
   Clock3,
-  Crosshair,
   Gauge,
   Layers,
   LineChart,
@@ -49,18 +48,18 @@ import {
 
 const DRAWING_TOOLS = [
   { id: "cursor", label: "Move / Pan", shortLabel: "Move", icon: MousePointer2 },
-  { id: "select", label: "Select Drawings", shortLabel: "Edit", icon: Crosshair },
   { id: "trendline", label: "Trendline", shortLabel: "Trend", icon: LineChart },
-  { id: "ray", label: "Ray", shortLabel: "Ray", icon: ArrowUpRight },
-  { id: "extended-line", label: "Extended Line", shortLabel: "Ext", icon: LineChart },
   { id: "horizontal-line", label: "Horizontal Line", shortLabel: "HLine", icon: Activity },
-  { id: "horizontal-ray", label: "Horizontal Ray", shortLabel: "HRay", icon: ArrowUpRight },
   { id: "vertical-line", label: "Vertical Line", shortLabel: "VLine", icon: Activity },
   { id: "rectangle", label: "Rectangle", shortLabel: "Rect", icon: Square },
   { id: "arrow", label: "Arrow", shortLabel: "Arrow", icon: ArrowUpRight },
   { id: "fib-retracement", label: "Fib Retracement", shortLabel: "Fib", icon: Gauge },
-  { id: "fib-extension", label: "Fib Extension", shortLabel: "FibX", icon: Gauge },
 ];
+const VISIBLE_DRAWING_TOOL_IDS = new Set(DRAWING_TOOLS.map((tool) => tool.id));
+
+function normalizeWorkspaceTool(tool) {
+  return VISIBLE_DRAWING_TOOL_IDS.has(tool) ? tool : "cursor";
+}
 
 const TIMEZONE_OPTIONS = [
   { value: "Asia/Dhaka", label: "UTC+6 / Dhaka" },
@@ -225,6 +224,26 @@ function rgbaFromHex(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
 }
 
+function normalizeFibLevelsForUi(levels, fallbackColor = "#38bdf8") {
+  const source = Array.isArray(levels) && levels.length ? levels : DEFAULT_FIB_LEVELS;
+
+  return source
+    .map((level) => {
+      const rawValue = typeof level === "number" ? level : level?.value;
+      const value = Number(rawValue);
+      if (!Number.isFinite(value)) return null;
+
+      return {
+        value,
+        visible: typeof level === "object" ? level.visible !== false : true,
+        color: typeof level === "object" ? level.color || fallbackColor : fallbackColor,
+        label: typeof level === "object" ? level.label || "" : "",
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.value - b.value);
+}
+
 function formatRemaining(totalSeconds) {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
   const minutes = Math.floor(safeSeconds / 60);
@@ -374,6 +393,71 @@ function NumberInput({ value, onChange, min, max, step = 1 }) {
       type="number"
       className="h-9 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
     />
+  );
+}
+
+function FibLevelsEditor({ levels, fallbackColor, onChange }) {
+  const safeLevels = useMemo(
+    () => normalizeFibLevelsForUi(levels, fallbackColor),
+    [fallbackColor, levels],
+  );
+  const emitLevels = (nextLevels) => onChange?.(normalizeFibLevelsForUi(nextLevels, fallbackColor));
+  const updateLevel = (index, patch) => {
+    emitLevels(safeLevels.map((level, levelIndex) => (
+      levelIndex === index ? { ...level, ...patch } : level
+    )));
+  };
+  const removeLevel = (index) => {
+    emitLevels(safeLevels.filter((_, levelIndex) => levelIndex !== index));
+  };
+  const addLevel = () => {
+    emitLevels([
+      ...safeLevels,
+      { value: 0.705, visible: true, color: fallbackColor, label: "" },
+    ]);
+  };
+
+  return (
+    <section className="col-span-full grid gap-2 rounded border border-[#1f1f23] bg-[#09090b] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Fib Levels</h3>
+        <button type="button" onClick={addLevel} className="h-8 rounded border border-[#1f1f23] px-3 text-xs font-semibold text-zinc-300 hover:text-white">
+          Add Level
+        </button>
+      </div>
+
+      <div className="grid gap-2">
+        {safeLevels.map((level, index) => (
+          <div key={`${level.value}-${index}`} className="grid gap-2 rounded border border-[#1f1f23] bg-[#0c0c0e] p-2 sm:grid-cols-[auto_minmax(5rem,0.6fr)_minmax(6rem,1fr)_auto_auto] sm:items-center">
+            <input
+              type="checkbox"
+              checked={level.visible !== false}
+              onChange={(event) => updateLevel(index, { visible: event.target.checked })}
+              className="h-4 w-4 accent-emerald-500"
+              aria-label="Toggle fib level"
+            />
+            <NumberInput value={level.value} min={-5} max={5} step={0.001} onChange={(value) => updateLevel(index, { value })} />
+            <input
+              value={level.label || ""}
+              onChange={(event) => updateLevel(index, { label: event.target.value })}
+              placeholder={`${Number(level.value * 100).toFixed(1)}%`}
+              className="h-9 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
+              aria-label="Fib level label"
+            />
+            <input
+              type="color"
+              value={colorInputValue(level.color || fallbackColor)}
+              onChange={(event) => updateLevel(index, { color: event.target.value })}
+              className="h-7 w-10 rounded border border-[#1f1f23] bg-transparent"
+              aria-label="Fib level color"
+            />
+            <button type="button" onClick={() => removeLevel(index)} className="h-8 rounded border border-[#1f1f23] px-2 text-xs text-zinc-500 hover:text-rose-300">
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -598,6 +682,11 @@ function ConfigModal({
                             fill: rgbaFromHex(fillColor, settings.drawings.fibFillOpacity),
                           })}
                         />
+                        <FibLevelsEditor
+                          levels={selectedTool.levels || settings.drawings.fibLevels}
+                          fallbackColor={selectedTool.color || settings.drawings.fibColor}
+                          onChange={(levels) => onSelectedDrawingChange?.({ levels })}
+                        />
                       </>
                     )}
                   </div>
@@ -725,7 +814,7 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
-      <div className="flex max-h-[86vh] w-full max-w-lg flex-col overflow-hidden rounded-lg border border-[#1f1f23] bg-[#0c0c0e] shadow-2xl">
+      <div className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-[#1f1f23] bg-[#0c0c0e] shadow-2xl">
         <div className="flex items-center justify-between border-b border-[#1f1f23] px-5 py-4">
           <div>
             <h2 className="text-sm font-semibold text-zinc-100">{tool.type}</h2>
@@ -774,6 +863,11 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
                     label="Fib fill"
                     value={tool.fill || settings.drawings.fibFillColor}
                     onChange={(fillColor) => onChange?.({ fill: rgbaFromHex(fillColor, settings.drawings.fibFillOpacity) })}
+                  />
+                  <FibLevelsEditor
+                    levels={tool.levels || settings.drawings.fibLevels}
+                    fallbackColor={tool.color || settings.drawings.fibColor}
+                    onChange={(levels) => onChange?.({ levels })}
                   />
                 </>
               )}
@@ -1357,7 +1451,7 @@ export default function TradingWorkspace() {
       : INITIAL_PANES
   ));
   const [activePaneId, setActivePaneId] = useState(() => persisted.activePaneId || 1);
-  const [activeTool, setActiveTool] = useState(() => persisted.activeTool || "cursor");
+  const [activeTool, setActiveTool] = useState(() => normalizeWorkspaceTool(persisted.activeTool || "cursor"));
   const [clearToolsSignal, setClearToolsSignal] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [objectModalOpen, setObjectModalOpen] = useState(false);
@@ -1397,6 +1491,9 @@ export default function TradingWorkspace() {
 
   const updatePaneConfig = useCallback((paneId, patch) => {
     setPanes((current) => current.map((pane) => (pane.id === paneId ? { ...pane, ...patch } : pane)));
+  }, []);
+  const changeActiveTool = useCallback((tool) => {
+    setActiveTool(normalizeWorkspaceTool(tool));
   }, []);
 
   const handleToolsChange = useCallback((paneId, tools) => {
@@ -1546,7 +1643,7 @@ export default function TradingWorkspace() {
       <div className="flex h-screen min-h-0 overflow-hidden bg-[#09090b] text-zinc-100">
         <DrawingToolbar
           activeTool={activeTool}
-          onToolChange={setActiveTool}
+          onToolChange={changeActiveTool}
           onClear={clearAllDrawings}
         />
 
@@ -1619,7 +1716,7 @@ export default function TradingWorkspace() {
                 clearToolsSignal={clearToolsSignal}
                 replay={replay}
                 onActivate={() => setActivePaneId(pane.id)}
-                onToolChange={setActiveTool}
+                onToolChange={changeActiveTool}
                 onToolsChange={handleToolsChange}
                 onSelectedToolChange={handleSelectedToolChange}
                 onToolSettingsRequest={openToolSettings}

@@ -726,10 +726,41 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const series = candleSeriesRef.current;
     if (!chart || !series) return null;
 
-    const x = chart.timeScale().timeToCoordinate(point.time);
+    const timeScale = chart.timeScale();
+    let x = null;
+
+    if (Number.isFinite(Number(point.logical)) && typeof timeScale.logicalToCoordinate === "function") {
+      x = timeScale.logicalToCoordinate(Number(point.logical));
+    }
+
+    if (x === null && point.time !== undefined) {
+      x = timeScale.timeToCoordinate(point.time);
+    }
+
     const y = series.priceToCoordinate(point.price);
 
     return x === null || y === null ? null : { x, y };
+  }, []);
+
+  const logicalToNearestTime = useCallback((logical) => {
+    const candles = dataRef.current;
+    if (!Number.isFinite(Number(logical)) || !candles.length) return null;
+
+    const index = Math.max(0, Math.min(candles.length - 1, Math.round(Number(logical))));
+    return candles[index]?.time ?? null;
+  }, []);
+
+  const pointToLogical = useCallback((point) => {
+    if (Number.isFinite(Number(point?.logical))) return Number(point.logical);
+
+    const chart = chartRef.current;
+    if (!chart || point?.time === undefined) return null;
+
+    const x = chart.timeScale().timeToCoordinate(point.time);
+    if (x === null || typeof chart.timeScale().coordinateToLogical !== "function") return null;
+
+    const logical = chart.timeScale().coordinateToLogical(x);
+    return Number.isFinite(logical) ? logical : null;
   }, []);
 
   const priceToCanvasY = useCallback((price) => {
@@ -747,21 +778,24 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const rect = overlay.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    let time = chart.timeScale().coordinateToTime(x);
+    const timeScale = chart.timeScale();
+    const logical = typeof timeScale.coordinateToLogical === "function"
+      ? timeScale.coordinateToLogical(x)
+      : null;
+    let time = timeScale.coordinateToTime(x);
     const price = series.coordinateToPrice(y);
 
-    if (time === null && typeof chart.timeScale().coordinateToLogical === "function") {
-      const logical = chart.timeScale().coordinateToLogical(x);
-      const candles = dataRef.current;
-      if (Number.isFinite(logical) && candles.length) {
-        const index = Math.max(0, Math.min(candles.length - 1, Math.round(logical)));
-        time = candles[index]?.time ?? null;
-      }
+    if (time === null && Number.isFinite(logical)) {
+      time = logicalToNearestTime(logical);
     }
 
     if (time === null || price === null) return null;
-    return { time, price };
-  }, []);
+    return {
+      time,
+      price,
+      ...(Number.isFinite(logical) ? { logical } : {}),
+    };
+  }, [logicalToNearestTime]);
 
   const selectedTool = useMemo(
     () => tools.find((tool) => tool.id === selectedToolId) || null,
@@ -1382,8 +1416,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         timeFormatter: (time) => formatChartTime(time, timezone),
       },
     });
-    redrawOverlay();
-  }, [mergedChartSettings, redrawOverlay, theme, timezone]);
+    redrawOverlayRef.current();
+  }, [mergedChartSettings, theme, timezone]);
 
   useEffect(() => {
     candleSeriesRef.current?.applyOptions(mergedCandleOptions);
@@ -1407,15 +1441,15 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       hasInitialFitRef.current = true;
       chartRef.current?.timeScale().fitContent();
     }
-    redrawOverlay();
-  }, [followLive, mergedVolumeSettings.heightRatio, mergedVolumeSettings.visible, redrawOverlay, styledData, volumeData]);
+    redrawOverlayRef.current();
+  }, [followLive, mergedVolumeSettings.heightRatio, mergedVolumeSettings.visible, styledData, volumeData]);
 
   useEffect(() => {
     if (lastFitTokenRef.current === fitContentToken) return;
     lastFitTokenRef.current = fitContentToken;
     chartRef.current?.timeScale().fitContent();
-    redrawOverlay();
-  }, [fitContentToken, redrawOverlay]);
+    redrawOverlayRef.current();
+  }, [fitContentToken]);
 
   useEffect(() => {
     smaSeriesRef.current?.applyOptions({ color: mergedIndicators.sma.color });
@@ -1579,20 +1613,37 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         points[interaction.handleIndex] = point;
       } else {
         const priceDelta = point.price - interaction.startPoint.price;
-        const timeDelta = typeof point.time === "number" && typeof interaction.startPoint.time === "number"
+        const startLogical = pointToLogical(interaction.startPoint);
+        const currentLogical = pointToLogical(point);
+        const logicalDelta = Number.isFinite(startLogical) && Number.isFinite(currentLogical)
+          ? currentLogical - startLogical
+          : null;
+        const timeDelta = logicalDelta === null && typeof point.time === "number" && typeof interaction.startPoint.time === "number"
           ? point.time - interaction.startPoint.time
-          : 0;
+          : null;
+
         points.forEach((toolPoint, index) => {
+          const originalLogical = pointToLogical(toolPoint);
+          const nextLogical = logicalDelta !== null && Number.isFinite(originalLogical)
+            ? originalLogical + logicalDelta
+            : null;
+          const nextTime = nextLogical !== null
+            ? logicalToNearestTime(nextLogical) ?? toolPoint.time
+            : typeof toolPoint.time === "number" && timeDelta !== null
+              ? toolPoint.time + timeDelta
+              : toolPoint.time;
+
           points[index] = {
-            time: typeof toolPoint.time === "number" ? toolPoint.time + timeDelta : toolPoint.time,
+            time: nextTime,
             price: toolPoint.price + priceDelta,
+            ...(nextLogical !== null ? { logical: nextLogical } : {}),
           };
         });
       }
 
       return { ...tool, points };
     }));
-  }, [canvasPointToDataPoint, commitTools, draftTool]);
+  }, [canvasPointToDataPoint, commitTools, draftTool, logicalToNearestTime, pointToLogical]);
 
   const handlePointerUp = useCallback((event) => {
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -1669,8 +1720,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
         ref={overlayRef}
         className="absolute inset-0 z-20"
         style={{
-          pointerEvents: toolMode === "cursor" ? "none" : "auto",
-          cursor: toolMode === "select" ? "move" : "crosshair",
+          pointerEvents: toolMode === "cursor" || toolMode === "select" ? "none" : "auto",
+          cursor: toolMode === "cursor" ? "default" : "crosshair",
           touchAction: "none",
         }}
         onPointerDown={handlePointerDown}
