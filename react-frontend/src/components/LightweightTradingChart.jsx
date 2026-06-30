@@ -51,16 +51,16 @@ const DEFAULT_CANDLE_OPTIONS = {
 };
 
 const DEFAULT_CHART_SETTINGS = {
-  gridVisible: true,
-  verticalGridVisible: true,
-  horizontalGridVisible: true,
+  gridVisible: false,
+  verticalGridVisible: false,
+  horizontalGridVisible: false,
   crosshairVisible: true,
   barSpacing: 6,
   rightOffset: 8,
 };
 
 const DEFAULT_VOLUME_SETTINGS = {
-  visible: true,
+  visible: false,
   heightRatio: 0.22,
   opacity: 0.38,
   upColor: "#10b981",
@@ -75,13 +75,13 @@ const DEFAULT_INDICATORS = {
     color: "#f8fafc",
   },
   ema: {
-    enabled: true,
+    enabled: false,
     length: 21,
     source: "close",
     color: "#f59e0b",
   },
   rsi: {
-    enabled: true,
+    enabled: false,
     period: 14,
     source: "close",
     overbought: 70,
@@ -89,7 +89,7 @@ const DEFAULT_INDICATORS = {
     color: "#38bdf8",
   },
   stochastic: {
-    enabled: true,
+    enabled: false,
     kPeriod: 14,
     dPeriod: 3,
     slowing: 3,
@@ -97,7 +97,7 @@ const DEFAULT_INDICATORS = {
     dColor: "#f472b6",
   },
   fvg: {
-    enabled: true,
+    enabled: false,
     minGapPercent: 0,
     extendBars: 18,
     bullColor: "rgba(16, 185, 129, 0.16)",
@@ -240,9 +240,9 @@ function normalizeFibLevels(levels, fallbackColor = DEFAULT_DRAWING_SETTINGS.fib
 }
 
 function formatFibLevel(level) {
-  const percent = level * 100;
-  if (Number.isInteger(percent)) return `${percent}%`;
-  return `${Number(percent.toFixed(1))}%`;
+  const value = Number(level);
+  if (!Number.isFinite(value)) return "";
+  return value.toFixed(3).replace(/\.?0+$/, "");
 }
 
 function formatTradeNumber(value, minimumDigits = 2, maximumDigits = 2) {
@@ -747,11 +747,16 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
   }, []);
 
   const completeTool = useCallback((newTool) => {
-    commitTools((current) => [...current, newTool]);
-    setSelectedToolId(newTool.id);
-    onToolComplete?.(newTool);
+    const completedTool = {
+      ...newTool,
+      createdAt: newTool.createdAt ?? Date.now(),
+    };
 
-    if (!mergedDrawingSettings.keepDrawingMode) {
+    commitTools((current) => [...current, completedTool]);
+    setSelectedToolId(completedTool.id);
+    onToolComplete?.(completedTool);
+
+    if (!mergedDrawingSettings.keepDrawingMode && completedTool.type !== "arrow") {
       setToolMode("cursor");
       onToolChange?.("cursor");
     }
@@ -963,8 +968,8 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       overlay.clientWidth - toolbarWidth - 10,
       (bounds.left + bounds.right) / 2 - toolbarWidth / 2,
     ));
-    const preferredY = selectedTool.type === "position" && bounds.bottom + 52 < overlay.clientHeight
-      ? bounds.bottom + 10
+    const preferredY = selectedTool.type === "position"
+      ? bounds.bottom + 12
       : bounds.top - 52;
     const y = Math.max(10, Math.min(
       overlay.clientHeight - 50,
@@ -1190,6 +1195,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     const duplicate = {
       ...selectedTool,
       id: createId(selectedTool.type || "tool"),
+      createdAt: Date.now(),
       points: selectedTool.points.map((point) => ({
         ...point,
         price: point.price * 1.002,
@@ -1502,12 +1508,12 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
     chart.priceScale("rsi").applyOptions({
       scaleMargins: { top: 0.58, bottom: 0.22 },
       borderVisible: false,
-      visible: true,
+      visible: Boolean(mergedIndicators.rsi.enabled),
     });
     chart.priceScale("oscillator").applyOptions({
       scaleMargins: { top: 0.58, bottom: 0.22 },
       borderVisible: false,
-      visible: true,
+      visible: Boolean(mergedIndicators.stochastic.enabled),
     });
 
     const redrawFromSubscription = (range) => {
@@ -1681,6 +1687,12 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      const isTyping = target?.isContentEditable
+        || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName);
+      if (isTyping) return;
+
       if (event.key === "Escape") {
         setDraftTool(null);
         setDraftPoint(null);
@@ -1690,6 +1702,7 @@ export const LightweightTradingChart = forwardRef(function LightweightTradingCha
       }
 
       if ((event.key === "Delete" || event.key === "Backspace") && selectedToolId) {
+        event.preventDefault();
         commitTools((current) => current.filter((tool) => tool.id !== selectedToolId));
         setSelectedToolId(null);
       }

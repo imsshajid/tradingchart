@@ -96,12 +96,34 @@ function normalizeWorkspaceTool(tool) {
   return DRAWING_TOOL_IDS.has(tool) ? tool : "cursor";
 }
 
-const TOOL_SHORTCUTS = {
-  f: "fib-retracement",
-  l: "position",
-  s: "position",
-  p: "position",
-};
+function shortcutMatches(event, shortcut) {
+  const normalized = String(shortcut || "").trim();
+  if (!normalized) return false;
+  if (normalized.length === 1) {
+    return event.key === normalized || event.key.toLowerCase() === normalized.toLowerCase();
+  }
+
+  return event.key.toLowerCase() === normalized.toLowerCase();
+}
+
+function drawingCreatedAt(tool) {
+  if (Number.isFinite(Number(tool?.createdAt))) return Number(tool.createdAt);
+  const match = String(tool?.id || "").match(/-([a-z0-9]+)$/i);
+  return match ? parseInt(match[1], 36) || 0 : 0;
+}
+
+function findMostRecentDrawing(drawingsByPaneId) {
+  let latest = null;
+  Object.entries(drawingsByPaneId || {}).forEach(([paneId, tools]) => {
+    (tools || []).forEach((tool, index) => {
+      const createdAt = drawingCreatedAt(tool);
+      if (!latest || createdAt > latest.createdAt || (createdAt === latest.createdAt && index > latest.index)) {
+        latest = { paneId: Number(paneId), tool, createdAt, index };
+      }
+    });
+  });
+  return latest;
+}
 
 const TIMEZONE_OPTIONS = [
   { value: "Asia/Dhaka", label: "UTC+6 / Dhaka" },
@@ -122,6 +144,9 @@ const INITIAL_PANES = [
   { id: 7, symbol: "USOIL", resolution: "4h" },
   { id: 8, symbol: "EURUSD", resolution: "1D" },
 ];
+
+const DEFAULT_PANE_COUNT = 1;
+const DEFAULT_SPLIT_MODE = "vertical";
 
 const DRAWING_INSTRUCTIONS = {
   trendline: "Trendline: click start, then click end.",
@@ -146,23 +171,59 @@ const DEFAULT_FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618].map((v
   color: "#38bdf8",
   label: "",
 }));
+const SETTINGS_DEFAULTS_VERSION = 2;
+
+const DEFAULT_SHORTCUTS = {
+  clearAll: "Delete",
+  clearLast: "Backspace",
+  fibRetracement: "!",
+  position: "p",
+  arrow: "a",
+  trendline: "t",
+  horizontalLine: "h",
+  rectangle: "r",
+  measure: "m",
+};
+
+const SHORTCUT_TOOL_MAP = {
+  fibRetracement: "fib-retracement",
+  position: "position",
+  arrow: "arrow",
+  trendline: "trendline",
+  horizontalLine: "horizontal-line",
+  rectangle: "rectangle",
+  measure: "measure",
+};
+
+const SHORTCUT_LABELS = [
+  ["fibRetracement", "Fib retracement"],
+  ["position", "Position"],
+  ["arrow", "Arrow"],
+  ["trendline", "Trendline"],
+  ["horizontalLine", "Horizontal line"],
+  ["rectangle", "Rectangle"],
+  ["measure", "Measure"],
+  ["clearLast", "Clear most recent"],
+  ["clearAll", "Clear all"],
+];
 
 const DEFAULT_SETTINGS = {
+  defaultsVersion: SETTINGS_DEFAULTS_VERSION,
   sessionBreaks: false,
   timezone: "Asia/Dhaka",
   bullColor: "#10b981",
   bearColor: "#f43f5e",
   wickColor: "#94a3b8",
   chart: {
-    gridVisible: true,
-    verticalGridVisible: true,
-    horizontalGridVisible: true,
+    gridVisible: false,
+    verticalGridVisible: false,
+    horizontalGridVisible: false,
     crosshairVisible: true,
     barSpacing: 6,
     rightOffset: 8,
   },
   volume: {
-    visible: true,
+    visible: false,
     heightRatio: 0.22,
     opacity: 0.38,
     upColor: "#10b981",
@@ -187,11 +248,11 @@ const DEFAULT_SETTINGS = {
   },
   indicators: {
     sma: { enabled: false, length: 50, source: "close", color: "#f8fafc" },
-    ema: { enabled: true, length: 21, source: "close", color: "#10b981" },
+    ema: { enabled: false, length: 21, source: "close", color: "#10b981" },
     rsi: { enabled: false, period: 14, source: "close", overbought: 70, oversold: 30, color: "#38bdf8" },
     stochastic: { enabled: false, kPeriod: 14, dPeriod: 3, slowing: 3, kColor: "#a78bfa", dColor: "#f472b6" },
     fvg: {
-      enabled: true,
+      enabled: false,
       minGapPercent: 0,
       extendBars: 18,
       bullColor: "#10b981",
@@ -199,10 +260,11 @@ const DEFAULT_SETTINGS = {
       opacity: 0.16,
     },
   },
+  shortcuts: DEFAULT_SHORTCUTS,
 };
 
 function mergeSettings(saved = {}) {
-  return {
+  const merged = {
     ...DEFAULT_SETTINGS,
     ...saved,
     chart: { ...DEFAULT_SETTINGS.chart, ...saved.chart },
@@ -221,7 +283,31 @@ function mergeSettings(saved = {}) {
       stochastic: { ...DEFAULT_SETTINGS.indicators.stochastic, ...saved.indicators?.stochastic },
       fvg: { ...DEFAULT_SETTINGS.indicators.fvg, ...saved.indicators?.fvg },
     },
+    shortcuts: { ...DEFAULT_SHORTCUTS, ...saved.shortcuts },
   };
+
+  if ((Number(saved.defaultsVersion) || 0) < SETTINGS_DEFAULTS_VERSION) {
+    merged.chart = {
+      ...merged.chart,
+      gridVisible: false,
+      verticalGridVisible: false,
+      horizontalGridVisible: false,
+    };
+    merged.volume = {
+      ...merged.volume,
+      visible: false,
+    };
+    merged.indicators = {
+      sma: { ...merged.indicators.sma, enabled: false },
+      ema: { ...merged.indicators.ema, enabled: false },
+      rsi: { ...merged.indicators.rsi, enabled: false },
+      stochastic: { ...merged.indicators.stochastic, enabled: false },
+      fvg: { ...merged.indicators.fvg, enabled: false },
+    };
+  }
+
+  merged.defaultsVersion = SETTINGS_DEFAULTS_VERSION;
+  return merged;
 }
 
 function loadWorkspaceState() {
@@ -391,7 +477,7 @@ function IconButton({ active = false, disabled = false, label, shortLabel, icon:
       disabled={disabled}
       onClick={onClick}
       className={`grid place-items-center rounded border text-zinc-400 transition-none ${
-        shortLabel ? "h-11 w-12 py-1" : "h-9 w-9"
+        shortLabel ? "h-9 w-9 sm:h-11 sm:w-12 sm:py-1" : "h-9 w-9"
       } ${
         active
           ? "border-emerald-500/70 bg-emerald-500/10 text-emerald-300"
@@ -399,7 +485,7 @@ function IconButton({ active = false, disabled = false, label, shortLabel, icon:
       } ${disabled ? "cursor-not-allowed opacity-35" : ""}`}
     >
       <Icon className="h-4 w-4" aria-hidden="true" />
-      {shortLabel && <span className="mt-0.5 text-[8px] font-semibold leading-none">{shortLabel}</span>}
+      {shortLabel && <span className="mt-0.5 hidden text-[8px] font-semibold leading-none sm:block">{shortLabel}</span>}
     </button>
   );
 }
@@ -428,14 +514,51 @@ function CheckboxRow({ label, checked, onChange }) {
 }
 
 function NumberInput({ value, onChange, min, max, step = 1 }) {
+  const inputRef = useRef(null);
+  const [draft, setDraft] = useState(() => String(value ?? ""));
+
+  useEffect(() => {
+    if (document.activeElement === inputRef.current) return;
+    setDraft(String(value ?? ""));
+  }, [value]);
+
+  const commitValue = (nextValue) => {
+    if (nextValue === "" || nextValue === "-" || nextValue === "." || nextValue === "-.") return;
+    const parsed = Number(nextValue);
+    if (!Number.isFinite(parsed)) return;
+    onChange(parsed);
+  };
+
+  const normalizeDraft = () => {
+    const parsed = Number(draft);
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(value ?? ""));
+      return;
+    }
+
+    const clamped = Math.min(
+      max ?? parsed,
+      Math.max(min ?? parsed, parsed),
+    );
+    setDraft(String(clamped));
+    onChange(clamped);
+  };
+
   return (
     <input
-      value={value}
+      ref={inputRef}
+      value={draft}
       min={min}
       max={max}
       step={step}
-      onChange={(event) => onChange(Number(event.target.value))}
-      type="number"
+      inputMode="decimal"
+      onBlur={normalizeDraft}
+      onChange={(event) => {
+        const nextValue = event.target.value;
+        setDraft(nextValue);
+        commitValue(nextValue);
+      }}
+      type="text"
       className="h-9 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
     />
   );
@@ -485,7 +608,7 @@ function FibLevelsEditor({ levels, fallbackColor, onChange }) {
             <input
               value={level.label || ""}
               onChange={(event) => updateLevel(index, { label: event.target.value })}
-              placeholder={`${Number(level.value * 100).toFixed(1)}%`}
+              placeholder={String(Number(level.value.toFixed(3)))}
               className="h-9 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
               aria-label="Fib level label"
             />
@@ -521,6 +644,7 @@ function ConfigModal({
   const updateChart = (patch) => update({ chart: { ...settings.chart, ...patch } });
   const updateVolume = (patch) => update({ volume: { ...settings.volume, ...patch } });
   const updateDrawings = (patch) => update({ drawings: { ...settings.drawings, ...patch } });
+  const updateShortcuts = (patch) => update({ shortcuts: { ...(settings.shortcuts || DEFAULT_SHORTCUTS), ...patch } });
   const updateIndicator = (name, patch) => update({
     indicators: {
       ...settings.indicators,
@@ -550,9 +674,9 @@ function ConfigModal({
   const selectedTool = selectedDrawing?.tool || null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
-      <div className="flex max-h-[86vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-[#1f1f23] bg-[#0c0c0e] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-[#1f1f23] px-5 py-4">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-2 backdrop-blur-sm sm:p-4" role="dialog" aria-modal="true">
+      <div className="flex max-h-[94dvh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-[#1f1f23] bg-[#0c0c0e] shadow-2xl sm:max-h-[88vh]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#1f1f23] px-3 py-3 sm:px-5 sm:py-4">
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="h-4 w-4 text-emerald-400" aria-hidden="true" />
             <h2 className="text-sm font-semibold text-zinc-100">Chart Settings</h2>
@@ -562,7 +686,7 @@ function ConfigModal({
           </button>
         </div>
 
-        <div className="flex border-b border-[#1f1f23] px-4">
+        <div className="flex overflow-x-auto border-b border-[#1f1f23] px-2 sm:px-4">
           {[
             ["chart", "Chart"],
             ["volume", "Volume"],
@@ -574,14 +698,14 @@ function ConfigModal({
               key={key}
               type="button"
               onClick={() => setTab(key)}
-              className={`h-11 px-4 text-xs font-semibold ${tab === key ? "text-emerald-300" : "text-zinc-500 hover:text-zinc-200"}`}
+              className={`h-11 shrink-0 px-3 text-xs font-semibold sm:px-4 ${tab === key ? "text-emerald-300" : "text-zinc-500 hover:text-zinc-200"}`}
             >
               {label}
             </button>
           ))}
         </div>
 
-        <div className="overflow-auto p-5">
+        <div className="overflow-auto p-3 sm:p-5">
           {tab === "chart" && (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <CheckboxRow label="Grid" checked={settings.chart.gridVisible} onChange={(gridVisible) => updateChart({ gridVisible })} />
@@ -649,6 +773,21 @@ function ConfigModal({
                 </section>
 
                 <section className="grid gap-3 rounded border border-[#1f1f23] bg-[#09090b] p-3">
+                  <h3 className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-zinc-300">Shortcuts</h3>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {SHORTCUT_LABELS.map(([shortcutId, label]) => (
+                      <FormRow key={shortcutId} label={label}>
+                        <input
+                          value={(settings.shortcuts || DEFAULT_SHORTCUTS)[shortcutId] || ""}
+                          onChange={(event) => updateShortcuts({ [shortcutId]: event.target.value })}
+                          className="h-9 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
+                        />
+                      </FormRow>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="grid gap-3 rounded border border-[#1f1f23] bg-[#09090b] p-3">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-zinc-300">Fibonacci</h3>
                     <button type="button" onClick={addFibLevel} className="h-8 rounded border border-[#1f1f23] px-3 text-xs font-semibold text-zinc-300 hover:text-white">
@@ -677,7 +816,7 @@ function ConfigModal({
                         <input
                           value={level.label || ""}
                           onChange={(event) => updateFibLevel(index, { label: event.target.value })}
-                          placeholder={`${Number(level.value * 100).toFixed(1)}%`}
+                          placeholder={String(Number(level.value.toFixed(3)))}
                           className="h-9 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none"
                         />
                         <input
@@ -883,9 +1022,9 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
   };
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
-      <div className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-[#1f1f23] bg-[#0c0c0e] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-[#1f1f23] px-5 py-4">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-2 backdrop-blur-sm sm:p-4" role="dialog" aria-modal="true">
+      <div className="flex max-h-[94dvh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-[#1f1f23] bg-[#0c0c0e] shadow-2xl sm:max-h-[88vh]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#1f1f23] px-3 py-3 sm:px-5 sm:py-4">
           <div>
             <h2 className="text-sm font-semibold text-zinc-100">{tool.type}</h2>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500">Pane {selectedDrawing.paneId}</p>
@@ -895,7 +1034,7 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
           </button>
         </div>
 
-        <div className="flex border-b border-[#1f1f23] px-4">
+        <div className="flex overflow-x-auto border-b border-[#1f1f23] px-2 sm:px-4">
           {[
             ["style", "Style"],
             ["coordinates", "Coordinates"],
@@ -905,14 +1044,14 @@ function DrawingObjectModal({ open, selectedDrawing, settings, onChange, onClose
               key={key}
               type="button"
               onClick={() => setTab(key)}
-              className={`h-11 px-4 text-xs font-semibold ${tab === key ? "text-emerald-300" : "text-zinc-500 hover:text-zinc-200"}`}
+              className={`h-11 shrink-0 px-3 text-xs font-semibold sm:px-4 ${tab === key ? "text-emerald-300" : "text-zinc-500 hover:text-zinc-200"}`}
             >
               {label}
             </button>
           ))}
         </div>
 
-        <div className="overflow-auto p-5">
+        <div className="overflow-auto p-3 sm:p-5">
           {tab === "style" && (
             <div className="grid gap-4 sm:grid-cols-2">
               <ColorInput label="Line color" value={tool.color || settings.drawings.color} onChange={(color) => onChange?.({ color })} />
@@ -1010,7 +1149,7 @@ function DrawingToolbar({ activeTool, magnetMode, onToolChange, onMagnetToggle, 
   };
 
   return (
-    <aside className="relative z-40 flex w-16 shrink-0 flex-col items-center gap-1 overflow-visible border-r border-[#1f1f23] bg-[#09090b] py-3">
+    <aside className="relative z-40 flex min-h-[44px] w-full shrink-0 items-center gap-0.5 overflow-visible border-b border-[#1f1f23] bg-[#09090b] px-2 py-1 md:h-auto md:w-16 md:flex-col md:gap-1 md:border-b-0 md:border-r md:px-0 md:py-3">
       <IconButton
         label="Magnet Mode"
         shortLabel="Mag"
@@ -1018,7 +1157,7 @@ function DrawingToolbar({ activeTool, magnetMode, onToolChange, onMagnetToggle, 
         active={magnetMode}
         onClick={onMagnetToggle}
       />
-      <div className="my-1 h-px w-10 bg-[#1f1f23]" />
+      <div className="hidden bg-[#1f1f23] md:mx-0 md:my-1 md:block md:h-px md:w-10" />
       {DRAWING_TOOL_GROUPS.map((group) => {
         const activeGroupTool = group.tools.find((tool) => tool.id === activeTool);
         const displayTool = activeGroupTool || group.tools[0];
@@ -1036,14 +1175,14 @@ function DrawingToolbar({ activeTool, magnetMode, onToolChange, onMagnetToggle, 
               title={displayTool.label}
               aria-label={displayTool.label}
               onClick={() => selectTool(displayTool.id)}
-              className={`relative grid h-11 w-12 place-items-center rounded border py-1 text-zinc-400 transition-none ${
+              className={`relative grid h-9 w-9 place-items-center rounded border text-zinc-400 transition-none sm:h-11 sm:w-12 sm:py-1 ${
                 active
                   ? "border-emerald-500/70 bg-emerald-500/10 text-emerald-300"
                   : "border-transparent hover:border-[#1f1f23] hover:bg-[#111114] hover:text-zinc-100"
               }`}
             >
               <Icon className="h-4 w-4" aria-hidden="true" />
-              <span className="mt-0.5 text-[8px] font-semibold leading-none">{displayTool.shortLabel}</span>
+              <span className="mt-0.5 hidden text-[8px] font-semibold leading-none sm:block">{displayTool.shortLabel}</span>
               {hasFlyout && <ChevronRight className="absolute right-0.5 top-1 h-2.5 w-2.5 text-zinc-600" aria-hidden="true" />}
             </button>
 
@@ -1063,7 +1202,7 @@ function DrawingToolbar({ activeTool, magnetMode, onToolChange, onMagnetToggle, 
             )}
 
             {hasFlyout && openGroupId === group.id && (
-              <div className="absolute left-[calc(100%+8px)] top-0 z-50 w-56 rounded-md border border-[#1f1f23] bg-[#0c0c0e] p-1.5 shadow-2xl">
+              <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-56 rounded-md border border-[#1f1f23] bg-[#0c0c0e] p-1.5 shadow-2xl md:left-[calc(100%+8px)] md:top-0">
                 {group.tools.map((tool) => {
                   const ToolIcon = tool.icon;
                   const selected = activeTool === tool.id;
@@ -1092,7 +1231,7 @@ function DrawingToolbar({ activeTool, magnetMode, onToolChange, onMagnetToggle, 
           </div>
         );
       })}
-      <div className="my-1 h-px w-10 bg-[#1f1f23]" />
+      <div className="hidden bg-[#1f1f23] md:mx-0 md:my-1 md:block md:h-px md:w-10" />
       <IconButton
         label="Clear Drawings"
         shortLabel="Clear"
@@ -1134,6 +1273,7 @@ function ChartPane({
   const [autoFollow, setAutoFollow] = useState(false);
 
   const compact = paneCount >= 4;
+  const showVolumeChrome = Boolean(settings.volume.visible);
   const refit = useCallback(() => setFitToken((value) => value + 1), []);
   const handleVisibleRangeChange = useCallback((range) => {
     if (!autoFollow || !range || !Number.isFinite(range.to)) return;
@@ -1294,16 +1434,16 @@ function ChartPane({
   return (
     <section
       onPointerDown={onActivate}
-      className={`flex min-h-0 min-w-0 flex-col overflow-hidden border bg-[#0c0c0e] ${
+      className={`flex min-h-[20rem] min-w-0 flex-col overflow-hidden border bg-[#0c0c0e] md:min-h-0 ${
         active ? "border-emerald-500/50" : "border-[#1f1f23]"
       }`}
     >
-      <div className="flex min-h-[50px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#1f1f23] px-2 py-2">
-        <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-h-[48px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#1f1f23] px-2 py-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
           <select
             value={config.symbol}
             onChange={(event) => onConfigChange(config.id, { symbol: event.target.value })}
-            className="h-8 rounded border border-[#1f1f23] bg-[#09090b] px-2 font-mono text-xs font-semibold text-zinc-100 outline-none"
+            className="h-8 min-w-0 flex-1 rounded border border-[#1f1f23] bg-[#09090b] px-2 font-mono text-xs font-semibold text-zinc-100 outline-none sm:flex-none"
             aria-label={`Pane ${config.id} symbol`}
           >
             {ASSETS.map((asset) => (
@@ -1326,14 +1466,16 @@ function ChartPane({
         </div>
 
         {!compact && (
-          <div className="flex items-center gap-2">
-            <div className="rounded border border-[#1f1f23] bg-[#09090b] px-2 py-1 text-right">
+          <div className="flex w-full min-w-0 items-center justify-between gap-2 sm:w-auto sm:justify-end">
+            <div className="min-w-0 flex-1 rounded border border-[#1f1f23] bg-[#09090b] px-2 py-1 text-right sm:flex-none">
               <p className="font-mono text-xs font-semibold text-zinc-100">{formatPrice(price, config.symbol)}</p>
               <p className={`font-mono text-[10px] ${change.value >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                 {change.value >= 0 ? "+" : ""}{formatPrice(change.value, config.symbol)} / {change.percent.toFixed(2)}%
               </p>
             </div>
-            <CountdownToBarClose resolution={config.resolution} latestTickTimestamp={latestCandle?.time ?? lastTick?.time ?? Date.now()} />
+            <div className="hidden sm:block">
+              <CountdownToBarClose resolution={config.resolution} latestTickTimestamp={latestCandle?.time ?? lastTick?.time ?? Date.now()} />
+            </div>
             <button
               type="button"
               onClick={() => {
@@ -1383,7 +1525,7 @@ function ChartPane({
           }}
           onToolSettingsRequest={(tool) => onToolSettingsRequest?.(config.id, tool)}
           onVisibleLogicalRangeChange={handleVisibleRangeChange}
-          showToolBadge={!compact}
+          showToolBadge={false}
           fitContentToken={fitToken}
           followLive={autoFollow && !replay.enabled}
           className="h-full min-h-0 rounded-none border-0 shadow-none"
@@ -1406,9 +1548,9 @@ function ChartPane({
         )}
       </div>
 
-      <div className="flex min-h-[40px] items-center justify-end border-t border-[#1f1f23] bg-[#09090b] px-2 py-1.5">
+      <div className="hidden min-h-[34px] items-center justify-end border-t border-[#1f1f23] bg-[#09090b] px-2 py-1.5 sm:flex">
         <div className="flex items-center gap-3 font-mono text-[10px] text-zinc-500">
-          <span>VOL {formatCompactVolume(volume)}</span>
+          {showVolumeChrome && <span>VOL {formatCompactVolume(volume)}</span>}
           <span>BARS {visibleCandles.length}</span>
         </div>
       </div>
@@ -1431,7 +1573,7 @@ function ReplayControlBar({
   const activeTime = replay.playhead || masterCandles[safeIndex]?.time;
 
   return (
-    <div className="flex min-h-[58px] items-center gap-3 border-t border-[#1f1f23] bg-[#0c0c0e] px-3">
+    <div className="flex min-h-[56px] flex-wrap items-center gap-2 border-t border-[#1f1f23] bg-[#0c0c0e] px-2 py-2 sm:flex-nowrap sm:gap-3 sm:px-3">
       <button
         type="button"
         onClick={replay.enabled || replay.selecting ? onExit : onStartSelecting}
@@ -1466,7 +1608,7 @@ function ReplayControlBar({
         />
       </div>
 
-      <div className="min-w-0 flex-1">
+      <div className="order-last min-w-0 flex-[1_0_100%] sm:order-none sm:flex-1">
         <input
           type="range"
           min="0"
@@ -1572,8 +1714,10 @@ export default function TradingWorkspace() {
   }
 
   const persisted = persistedRef.current;
-  const [paneCount, setPaneCount] = useState(() => persisted.paneCount || 2);
-  const [splitMode, setSplitMode] = useState(() => persisted.splitMode || "vertical");
+  const [paneCount, setPaneCount] = useState(() => (
+    Number.isFinite(Number(persisted.paneCount)) ? Number(persisted.paneCount) : DEFAULT_PANE_COUNT
+  ));
+  const [splitMode, setSplitMode] = useState(() => persisted.splitMode || DEFAULT_SPLIT_MODE);
   const [panes, setPanes] = useState(() => (
     Array.isArray(persisted.panes) && persisted.panes.length
       ? INITIAL_PANES.map((pane, index) => ({ ...pane, ...persisted.panes[index] }))
@@ -1628,25 +1772,6 @@ export default function TradingWorkspace() {
     ));
   }, []);
 
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
-      const target = event.target;
-      const isTyping = target?.isContentEditable
-        || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName);
-      if (isTyping) return;
-
-      const shortcutTool = TOOL_SHORTCUTS[event.key.toLowerCase()];
-      if (!shortcutTool) return;
-
-      event.preventDefault();
-      changeActiveTool(shortcutTool);
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [changeActiveTool]);
-
   const handleToolsChange = useCallback((paneId, tools) => {
     setDrawingsByPaneId((current) => {
       try {
@@ -1676,6 +1801,19 @@ export default function TradingWorkspace() {
   const updateSelectedDrawing = useCallback((patch) => {
     if (!selectedDrawing?.tool?.id) return;
 
+    if (
+      Array.isArray(patch.levels)
+      && (selectedDrawing.tool.type === "fib-retracement" || selectedDrawing.tool.type === "fib-extension")
+    ) {
+      setSettings((current) => ({
+        ...current,
+        drawings: {
+          ...current.drawings,
+          fibLevels: normalizeFibLevelsForUi(patch.levels, current.drawings.fibColor),
+        },
+      }));
+    }
+
     setDrawingsByPaneId((current) => {
       const paneTools = current[selectedDrawing.paneId] || [];
       return {
@@ -1697,6 +1835,56 @@ export default function TradingWorkspace() {
     setClearToolsSignal((value) => value + 1);
     setSelectedDrawing(null);
   }, []);
+
+  const clearMostRecentDrawing = useCallback(() => {
+    const latest = findMostRecentDrawing(drawingsByPaneId);
+    if (!latest) return;
+
+    setDrawingsByPaneId((current) => {
+      const paneTools = current[latest.paneId] || [];
+      return {
+        ...current,
+        [latest.paneId]: paneTools.filter((tool) => tool.id !== latest.tool.id),
+      };
+    });
+    setSelectedDrawing((current) => (
+      current?.tool?.id === latest.tool.id ? null : current
+    ));
+  }, [drawingsByPaneId]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      const isTyping = target?.isContentEditable
+        || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName);
+      if (isTyping) return;
+
+      const shortcuts = settings.shortcuts || DEFAULT_SHORTCUTS;
+      if (shortcutMatches(event, shortcuts.clearAll)) {
+        event.preventDefault();
+        clearAllDrawings();
+        return;
+      }
+
+      if (shortcutMatches(event, shortcuts.clearLast)) {
+        event.preventDefault();
+        clearMostRecentDrawing();
+        return;
+      }
+
+      const shortcutEntry = Object.entries(SHORTCUT_TOOL_MAP).find(([shortcutId]) => (
+        shortcutMatches(event, shortcuts[shortcutId])
+      ));
+      if (!shortcutEntry) return;
+
+      event.preventDefault();
+      changeActiveTool(shortcutEntry[1]);
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [changeActiveTool, clearAllDrawings, clearMostRecentDrawing, settings.shortcuts]);
 
   const handleCandlesChange = useCallback((paneId, candles) => {
     setPaneCandles((current) => ({ ...current, [paneId]: candles }));
@@ -1791,7 +1979,7 @@ export default function TradingWorkspace() {
 
   return (
     <div className="dark">
-      <div className="flex h-screen min-h-0 overflow-hidden bg-[#09090b] text-zinc-100">
+      <div className="flex h-[100dvh] min-h-0 flex-col overflow-hidden bg-[#09090b] text-zinc-100 md:flex-row">
         <DrawingToolbar
           activeTool={activeTool}
           magnetMode={settings.drawings.magnetMode}
@@ -1806,21 +1994,21 @@ export default function TradingWorkspace() {
           onClear={clearAllDrawings}
         />
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex min-h-[64px] shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[#1f1f23] bg-[#0c0c0e] px-4 py-2">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#1f1f23] bg-[#0c0c0e] px-2 py-2 sm:px-3 lg:px-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <CandlestickChart className="h-5 w-5 text-emerald-400" aria-hidden="true" />
-                <p className="font-mono text-sm font-bold uppercase tracking-[0.24em] text-zinc-100">QUANTUM TERMINAL</p>
+                <p className="truncate font-mono text-xs font-bold uppercase tracking-[0.16em] text-zinc-100 sm:text-sm sm:tracking-[0.24em]">QUANTUM TERMINAL</p>
               </div>
-              <p className="mt-1 text-xs text-zinc-500">Synchronized replay, live ticks, custom plotting</p>
+              <p className="mt-1 hidden text-xs text-zinc-500 sm:block">Synchronized replay, live ticks, custom plotting</p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto sm:flex-none sm:flex-wrap sm:overflow-visible">
               <select
                 value={paneCount}
                 onChange={(event) => setPaneCount(Number(event.target.value))}
-                className="h-10 rounded border border-[#1f1f23] bg-[#09090b] px-3 text-sm text-zinc-100 outline-none"
+                className="h-9 shrink-0 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none sm:h-10 sm:px-3 sm:text-sm"
                 aria-label="Layout count"
               >
                 {[1, 2, 4, 6, 8].map((count) => <option key={count} value={count}>{count} chart{count > 1 ? "s" : ""}</option>)}
@@ -1830,7 +2018,7 @@ export default function TradingWorkspace() {
                 <select
                   value={splitMode}
                   onChange={(event) => setSplitMode(event.target.value)}
-                  className="h-10 rounded border border-[#1f1f23] bg-[#09090b] px-3 text-sm text-zinc-100 outline-none"
+                  className="hidden h-9 shrink-0 rounded border border-[#1f1f23] bg-[#09090b] px-2 text-xs text-zinc-100 outline-none sm:block sm:h-10 sm:px-3 sm:text-sm"
                   aria-label="Two pane split direction"
                 >
                   <option value="vertical">Vertical split</option>
@@ -1838,14 +2026,14 @@ export default function TradingWorkspace() {
                 </select>
               )}
 
-              <div className={`flex h-10 items-center gap-2 rounded border px-3 text-xs font-semibold ${
+              <div className={`hidden h-10 shrink-0 items-center gap-2 rounded border px-3 text-xs font-semibold sm:flex ${
                 isLiveCapable ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-[#1f1f23] bg-[#09090b] text-zinc-400"
               }`}>
                 {isLiveCapable ? <Wifi className="h-4 w-4" aria-hidden="true" /> : <WifiOff className="h-4 w-4" aria-hidden="true" />}
                 {isLiveCapable ? activeFeedLabel : `${activeAsset.source} DELAYED`}
               </div>
 
-              <div className="flex h-10 items-center gap-2 rounded border border-[#1f1f23] bg-[#09090b] px-3 text-xs font-semibold text-zinc-300">
+              <div className="hidden h-10 shrink-0 items-center gap-2 rounded border border-[#1f1f23] bg-[#09090b] px-3 text-xs font-semibold text-zinc-300 lg:flex">
                 <Layers className="h-4 w-4 text-zinc-500" aria-hidden="true" />
                 Active pane {activePaneId}
               </div>
@@ -1853,7 +2041,7 @@ export default function TradingWorkspace() {
               <button
                 type="button"
                 onClick={() => setModalOpen(true)}
-                className="grid h-10 w-10 place-items-center rounded border border-[#1f1f23] bg-[#09090b] text-zinc-300 hover:text-white"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded border border-[#1f1f23] bg-[#09090b] text-zinc-300 hover:text-white sm:h-10 sm:w-10"
                 aria-label="Open settings"
                 title="Settings"
               >
@@ -1862,7 +2050,7 @@ export default function TradingWorkspace() {
             </div>
           </header>
 
-          <main className={`grid min-h-0 flex-1 gap-2 p-2 ${getLayoutClass(paneCount, splitMode)}`}>
+          <main className={`grid min-h-0 flex-1 gap-2 overflow-auto p-1.5 md:overflow-hidden md:p-2 ${getLayoutClass(paneCount, splitMode)}`}>
             {visiblePanes.map((pane) => (
               <ChartPane
                 key={pane.id}

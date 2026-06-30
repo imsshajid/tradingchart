@@ -22,9 +22,18 @@ body,
   margin: 0;
 }
 
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;
+  }
+}
+
 body {
   overflow: hidden;
   background: #0d1117;
+  -webkit-tap-highlight-color: transparent;
 }
 
 button,
