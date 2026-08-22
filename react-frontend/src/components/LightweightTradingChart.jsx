@@ -1,19 +1,54 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, CrosshairMode } from 'lightweight-charts';
-import { DEFAULT_CHART_SETTINGS } from '../hooks/useChartSettings';
+
+const FALLBACK_SETTINGS = {
+  upColor: '#089981',
+  downColor: '#f23645',
+  borderVisible: true,
+  borderUpColor: '#089981',
+  borderDownColor: '#f23645',
+  wickVisible: true,
+  wickUpColor: '#089981',
+  wickDownColor: '#f23645',
+  lastPriceLineVisible: true,
+  lastPriceLineColor: '#2962ff',
+  showLastPriceLabel: true,
+  showSymbolLogo: true,
+  showOpenMarketStatus: true,
+  showOHLC: true,
+  showBarChange: true,
+  showVolume: true,
+  showCountdownToBarClose: true,
+  priceScalePlacement: 'right',
+  backgroundColor: '#131722',
+  gridVertColor: '#1e222d',
+  gridHorzColor: '#1e222d',
+  crosshairColor: '#758696',
+  watermarkVisible: false,
+  showBuySellButtons: true,
+};
 
 export default function LightweightTradingChart({
   data = [],
   symbol = 'BTCUSDT',
   timeframe = '1m',
-  settings = DEFAULT_CHART_SETTINGS,
+  settings = FALLBACK_SETTINGS,
 }) {
+  const activeSettings = { ...FALLBACK_SETTINGS, ...settings };
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
 
-  const [currentOHLC, setCurrentOHLC] = useState({ open: 0, high: 0, low: 0, close: 0, volume: 0, change: 0, changePercent: 0 });
+  const [currentOHLC, setCurrentOHLC] = useState({
+    open: 0,
+    high: 0,
+    low: 0,
+    close: 0,
+    volume: 0,
+    change: 0,
+    changePercent: 0,
+  });
   const [countdown, setCountdown] = useState('00:00');
 
   useEffect(() => {
@@ -26,25 +61,25 @@ export default function LightweightTradingChart({
       width: width,
       height: height,
       layout: {
-        background: { type: ColorType.Solid, color: settings.backgroundColor || '#131722' },
+        background: { type: ColorType.Solid, color: activeSettings.backgroundColor },
         textColor: '#d1d4dc',
         fontSize: 12,
       },
       grid: {
-        vertLines: { color: settings.gridVertColor || '#1e222d' },
-        horzLines: { color: settings.gridHorzColor || '#1e222d' },
+        vertLines: { color: activeSettings.gridVertColor },
+        horzLines: { color: activeSettings.gridHorzColor },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: settings.crosshairColor || '#758696', labelBackgroundColor: '#2a2e39' },
-        horzLine: { color: settings.crosshairColor || '#758696', labelBackgroundColor: '#2a2e39' },
+        vertLine: { color: activeSettings.crosshairColor, labelBackgroundColor: '#2a2e39' },
+        horzLine: { color: activeSettings.crosshairColor, labelBackgroundColor: '#2a2e39' },
       },
       rightPriceScale: {
-        visible: settings.priceScalePlacement === 'right',
+        visible: activeSettings.priceScalePlacement === 'right',
         borderColor: '#2a2e39',
       },
       leftPriceScale: {
-        visible: settings.priceScalePlacement === 'left',
+        visible: activeSettings.priceScalePlacement === 'left',
         borderColor: '#2a2e39',
       },
       timeScale: {
@@ -56,17 +91,17 @@ export default function LightweightTradingChart({
     chartRef.current = chart;
 
     const mainSeries = chart.addCandlestickSeries({
-      upColor: settings.upColor || '#089981',
-      downColor: settings.downColor || '#f23645',
-      borderVisible: settings.borderVisible !== false,
-      borderUpColor: settings.borderUpColor || '#089981',
-      borderDownColor: settings.borderDownColor || '#f23645',
-      wickVisible: settings.wickVisible !== false,
-      wickUpColor: settings.wickUpColor || '#089981',
-      wickDownColor: settings.wickDownColor || '#f23645',
-      lastValueVisible: settings.showLastPriceLabel !== false,
-      priceLineVisible: settings.lastPriceLineVisible !== false,
-      priceLineColor: settings.lastPriceLineColor || '#2962ff',
+      upColor: activeSettings.upColor,
+      downColor: activeSettings.downColor,
+      borderVisible: activeSettings.borderVisible,
+      borderUpColor: activeSettings.borderUpColor,
+      borderDownColor: activeSettings.borderDownColor,
+      wickVisible: activeSettings.wickVisible,
+      wickUpColor: activeSettings.wickUpColor,
+      wickDownColor: activeSettings.wickDownColor,
+      lastValueVisible: activeSettings.showLastPriceLabel,
+      priceLineVisible: activeSettings.lastPriceLineVisible,
+      priceLineColor: activeSettings.lastPriceLineColor,
     });
     seriesRef.current = mainSeries;
 
@@ -77,7 +112,6 @@ export default function LightweightTradingChart({
     });
     volumeSeriesRef.current = volumeSeries;
 
-    // Safe scale margin setup on the chart instance
     chart.priceScale('').applyOptions({
       scaleMargins: { top: 0.82, bottom: 0 },
     });
@@ -121,24 +155,24 @@ export default function LightweightTradingChart({
     if (!chartRef.current || !seriesRef.current) return;
 
     chartRef.current.applyOptions({
-      layout: { background: { type: ColorType.Solid, color: settings.backgroundColor } },
-      grid: { vertLines: { color: settings.gridVertColor }, horzLines: { color: settings.gridHorzColor } },
-      rightPriceScale: { visible: settings.priceScalePlacement === 'right' },
-      leftPriceScale: { visible: settings.priceScalePlacement === 'left' },
+      layout: { background: { type: ColorType.Solid, color: activeSettings.backgroundColor } },
+      grid: { vertLines: { color: activeSettings.gridVertColor }, horzLines: { color: activeSettings.gridHorzColor } },
+      rightPriceScale: { visible: activeSettings.priceScalePlacement === 'right' },
+      leftPriceScale: { visible: activeSettings.priceScalePlacement === 'left' },
     });
 
     seriesRef.current.applyOptions({
-      upColor: settings.upColor,
-      downColor: settings.downColor,
-      borderVisible: settings.borderVisible,
-      borderUpColor: settings.borderUpColor,
-      borderDownColor: settings.borderDownColor,
-      wickVisible: settings.wickVisible,
-      wickUpColor: settings.wickUpColor,
-      wickDownColor: settings.wickDownColor,
-      priceLineVisible: settings.lastPriceLineVisible,
-      priceLineColor: settings.lastPriceLineColor,
-      lastValueVisible: settings.showLastPriceLabel,
+      upColor: activeSettings.upColor,
+      downColor: activeSettings.downColor,
+      borderVisible: activeSettings.borderVisible,
+      borderUpColor: activeSettings.borderUpColor,
+      borderDownColor: activeSettings.borderDownColor,
+      wickVisible: activeSettings.wickVisible,
+      wickUpColor: activeSettings.wickUpColor,
+      wickDownColor: activeSettings.wickDownColor,
+      priceLineVisible: activeSettings.lastPriceLineVisible,
+      priceLineColor: activeSettings.lastPriceLineColor,
+      lastValueVisible: activeSettings.showLastPriceLabel,
     });
   }, [settings, symbol, timeframe]);
 
@@ -172,7 +206,7 @@ export default function LightweightTradingChart({
   }, [data]);
 
   useEffect(() => {
-    if (!settings.showCountdownToBarClose) return;
+    if (!activeSettings.showCountdownToBarClose) return;
 
     const interval = setInterval(() => {
       const now = new Date();
@@ -181,7 +215,7 @@ export default function LightweightTradingChart({
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [settings.showCountdownToBarClose]);
+  }, [activeSettings.showCountdownToBarClose]);
 
   const isBullish = currentOHLC.change >= 0;
 
@@ -189,7 +223,7 @@ export default function LightweightTradingChart({
     <div className="relative h-full w-full select-none overflow-hidden bg-[#131722]">
       {/* Status Line */}
       <div className="absolute left-4 top-3 z-20 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono pointer-events-none">
-        {settings.showSymbolLogo && (
+        {activeSettings.showSymbolLogo && (
           <div className="flex items-center gap-1.5 font-bold text-white tracking-wide">
             <span className="flex h-2 w-2 rounded-full bg-[#089981]" />
             <span>{symbol}</span>
@@ -197,13 +231,13 @@ export default function LightweightTradingChart({
           </div>
         )}
 
-        {settings.showOHLC && (
+        {activeSettings.showOHLC && (
           <div className="flex items-center gap-3 text-xs text-[#787b86]">
             <div>O <span className={isBullish ? 'text-[#089981]' : 'text-[#f23645]'}>{(currentOHLC?.open || 0).toFixed(2)}</span></div>
             <div>H <span className={isBullish ? 'text-[#089981]' : 'text-[#f23645]'}>{(currentOHLC?.high || 0).toFixed(2)}</span></div>
             <div>L <span className={isBullish ? 'text-[#089981]' : 'text-[#f23645]'}>{(currentOHLC?.low || 0).toFixed(2)}</span></div>
             <div>C <span className={isBullish ? 'text-[#089981]' : 'text-[#f23645]'}>{(currentOHLC?.close || 0).toFixed(2)}</span></div>
-            {settings.showBarChange && (
+            {activeSettings.showBarChange && (
               <div className={isBullish ? 'text-[#089981]' : 'text-[#f23645]'}>
                 {isBullish ? '+' : ''}{(currentOHLC?.change || 0).toFixed(2)} ({(currentOHLC?.changePercent || 0).toFixed(2)}%)
               </div>
@@ -212,7 +246,7 @@ export default function LightweightTradingChart({
         )}
       </div>
 
-      {settings.showCountdownToBarClose && (
+      {activeSettings.showCountdownToBarClose && (
         <div className="absolute right-14 bottom-8 z-20 rounded bg-[#2a2e39] px-2 py-0.5 text-[11px] font-mono text-white shadow">
           {countdown}
         </div>
