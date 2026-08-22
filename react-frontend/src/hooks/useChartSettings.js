@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 
 export const DEFAULT_CHART_SETTINGS = {
+  // Candlestick Colors
   upColor: '#089981',
   downColor: '#f23645',
   borderVisible: true,
@@ -9,21 +10,31 @@ export const DEFAULT_CHART_SETTINGS = {
   wickVisible: true,
   wickUpColor: '#089981',
   wickDownColor: '#f23645',
+
+  // Price Lines & Labels
   lastPriceLineVisible: true,
   lastPriceLineColor: '#2962ff',
   showLastPriceLabel: true,
+
+  // Status Line
   showSymbolLogo: true,
   showOpenMarketStatus: true,
   showOHLC: true,
   showBarChange: true,
   showVolume: true,
+
+  // Scales & Countdown
   showCountdownToBarClose: true,
   priceScalePlacement: 'right',
+
+  // Appearance & Grid
   backgroundColor: '#131722',
   gridVertColor: '#1e222d',
   gridHorzColor: '#1e222d',
   crosshairColor: '#758696',
   watermarkVisible: false,
+
+  // Trading Controls
   showBuySellButtons: true,
 };
 
@@ -89,7 +100,7 @@ export function useChartSettings() {
     try {
       localStorage.setItem('tv_chart_settings', JSON.stringify(settings));
     } catch (e) {
-      console.warn('Could not save settings to localStorage:', e);
+      console.warn('Could not persist chart settings:', e);
     }
   }, [settings]);
 

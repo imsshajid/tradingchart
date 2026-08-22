@@ -1,5 +1,5 @@
 {
-  "name": "quantum-terminal-frontend",
+  "name": "react-frontend",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -9,17 +9,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "lightweight-charts": "^5.0.8",
-    "lucide-react": "^1.21.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "lightweight-charts": "^4.1.0",
+    "lucide-react": "^0.344.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.6.0",
-    "autoprefixer": "^10.4.21",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.1",
+    "vite": "^5.1.6"
   }
 }
