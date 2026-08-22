@@ -18,8 +18,7 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="relative w-full max-w-2xl overflow-hidden rounded-xl border border-[#2a2e39] bg-[#1e222d] text-[#d1d4dc] shadow-2xl">
-        
-        {/* Modal Header */}
+        {/* Header */}
         <div className="flex items-center justify-between border-b border-[#2a2e39] px-6 py-4">
           <div className="flex items-center gap-3">
             <h2 className="text-base font-semibold tracking-tight text-white">Chart Settings</h2>
@@ -33,9 +32,9 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
           </button>
         </div>
 
-        {/* Modal Body */}
+        {/* Body */}
         <div className="flex h-[440px]">
-          {/* Sidebar Tabs */}
+          {/* Sidebar */}
           <div className="w-48 border-r border-[#2a2e39] bg-[#181b24] p-2">
             <div className="space-y-1">
               {tabs.map((tab) => (
@@ -73,15 +72,13 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
             </div>
           </div>
 
-          {/* Tab Content Panel */}
+          {/* Settings Panel */}
           <div className="flex-1 overflow-y-auto p-6">
-            {/* 1. SYMBOL TAB */}
             {activeTab === 'symbol' && (
               <div className="space-y-6">
                 <div>
                   <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#787b86]">Candle Colors</h3>
                   <div className="grid grid-cols-2 gap-4 rounded-lg border border-[#2a2e39] bg-[#141720] p-4">
-                    {/* Body Color */}
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-[#d1d4dc]">Body</span>
                       <div className="flex items-center gap-2">
@@ -90,19 +87,16 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
                           value={settings.upColor}
                           onChange={(e) => updateSetting('upColor', e.target.value)}
                           className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent"
-                          title="Bullish Color"
                         />
                         <input
                           type="color"
                           value={settings.downColor}
                           onChange={(e) => updateSetting('downColor', e.target.value)}
                           className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent"
-                          title="Bearish Color"
                         />
                       </div>
                     </div>
 
-                    {/* Borders Color */}
                     <div className="flex items-center justify-between">
                       <label className="flex items-center gap-2 text-xs text-[#d1d4dc] cursor-pointer">
                         <input
@@ -131,7 +125,6 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
                       </div>
                     </div>
 
-                    {/* Wick Color */}
                     <div className="flex items-center justify-between">
                       <label className="flex items-center gap-2 text-xs text-[#d1d4dc] cursor-pointer">
                         <input
@@ -162,7 +155,6 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
                   </div>
                 </div>
 
-                {/* Price Lines */}
                 <div>
                   <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#787b86]">Price Lines</h3>
                   <div className="space-y-3 rounded-lg border border-[#2a2e39] bg-[#141720] p-4">
@@ -188,7 +180,6 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
               </div>
             )}
 
-            {/* 2. STATUS LINE TAB */}
             {activeTab === 'status_line' && (
               <div className="space-y-4">
                 <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[#787b86]">Header Info</h3>
@@ -214,7 +205,6 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
               </div>
             )}
 
-            {/* 3. SCALES TAB */}
             {activeTab === 'scales' && (
               <div className="space-y-4">
                 <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[#787b86]">Scale Options</h3>
@@ -241,7 +231,6 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
               </div>
             )}
 
-            {/* 4. APPEARANCE TAB */}
             {activeTab === 'appearance' && (
               <div className="space-y-6">
                 <div>
@@ -274,7 +263,6 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
               </div>
             )}
 
-            {/* 5. TRADING TAB */}
             {activeTab === 'trading' && (
               <div className="space-y-4">
                 <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[#787b86]">On-Chart Order Controls</h3>
@@ -294,7 +282,7 @@ export default function ChartSettingsModal({ isOpen, onClose, settings, updateSe
           </div>
         </div>
 
-        {/* Modal Footer */}
+        {/* Footer */}
         <div className="flex items-center justify-between border-t border-[#2a2e39] bg-[#181b24] px-6 py-3.5">
           <button
             onClick={resetToDefault}
